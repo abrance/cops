@@ -189,6 +189,54 @@ jobs:
             | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
                 "${DEPLOY_USER}@${DEPLOY_HOST}" "tar xz -C '${remote_dir}'"
 
+      - name: 下发运行期密钥
+        env:
+          # GitHub Actions 不支持按变量名动态读取 secret，新增应用的运行期密钥时
+          # 在此追加一行，并在对应 apps/<app>/app.conf 的 SECRET_ENV 中声明变量名
+          PTDOC_DATA_KEY: ${{ secrets.PTDOC_DATA_KEY }}
+        run: |
+          set -euo pipefail
+          app="${{ matrix.app }}"
+          conf="apps/${app}/app.conf"
+
+          secret_keys=""
+          if [ -f "${conf}" ]; then
+            # shellcheck disable=SC1090
+            . "${conf}"
+            secret_keys="${SECRET_ENV:-}"
+          fi
+
+          if [ -z "${secret_keys}" ]; then
+            echo "应用 ${app} 未声明 SECRET_ENV，跳过分发"
+            exit 0
+          fi
+
+          # 只检查变量是否存在，不打印任何取值
+          payload=""
+          missing=""
+          for key in ${secret_keys}; do
+            value="${!key:-}"
+            if [ -z "${value}" ]; then
+              missing="${missing} ${key}"
+              continue
+            fi
+            payload="${payload}${key}=${value}"$'\n'
+          done
+
+          if [ -n "${missing}" ]; then
+            echo "缺少 GitHub Actions secret:${missing}" >&2
+            exit 1
+          fi
+
+          # 通过 stdin 传输，密钥不出现在命令行、不落盘到 runner
+          remote_file="/opt/cops/secrets/${app}.env"
+          printf '%s' "${payload}" \
+            | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                "umask 077; mkdir -p /opt/cops/secrets; cat > '${remote_file}'; chmod 600 '${remote_file}'"
+
+          echo "已下发 ${app} 运行期密钥（$(printf '%s' "${secret_keys}" | wc -w) 个变量）"
+
       - name: 执行部署
         run: |
           set -euo pipefail

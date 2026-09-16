@@ -54,6 +54,9 @@
 | `DEPLOY_PASSWORD` | 是 | SSH 密码 |
 | `DEPLOY_PORT` | 否 | SSH 端口，默认 `22` |
 | `DEPLOY_KNOWN_HOSTS` | 否 | 服务器 SSH 主机公钥，建议固定（不配置时用 `ssh-keyscan` 临时获取） |
+| `PTDOC_DATA_KEY` | 是 | `ptdoc` 运行期密钥，用于加解密七牛 SecretKey；部署时下发到 `/opt/cops/secrets/ptdoc.env` |
+
+应用运行期密钥统一放 GitHub Secrets，由 CI 在部署前写入云主机的 `/opt/cops/secrets/<app>.env`（权限 600，不入库）。密钥通过 stdin 传输，不经过命令行，也不会落盘到 runner。
 
 ## 部署流程
 
@@ -81,8 +84,13 @@
    REQUIRED_ENV=<缺失即失败的变量名，空格分隔；可省略>
    ```
 
-4. 若需要运行期密钥，在云主机创建 `/opt/cops/secrets/<app>.env` 并 `chmod 600`；`deploy.sh` 会自动作为额外的 `--env-file` 加载。
-5. 若应用在缺失某个密钥时会静默降级，把它写进 `REQUIRED_ENV`：部署前会检查该变量非空，避免带着空密钥上线。
+4. 若需要运行期密钥：
+   - 在 `app.conf` 声明 `SECRET_ENV=<变量名，空格分隔>`；
+   - 在 GitHub Secrets 建同名 secret（含值）；
+   - 在 `deploy.yml` 的「下发运行期密钥」步骤 `env:` 下追加一行 `NAME: ${{ secrets.NAME }}`（GitHub 不支持按变量名动态读取 secret，故需显式声明）。
+
+   CI 会在部署前把 `SECRET_ENV` 声明的变量写入云主机 `/opt/cops/secrets/<app>.env`，`deploy.sh` 自动作为额外的 `--env-file` 加载。**该文件由 CI 全量覆盖，`SECRET_ENV` 必须列出该应用全部需要下发的变量。**
+5. 若应用在缺失某个密钥时会静默降级，把它写进 `REQUIRED_ENV`：`deploy.sh` 在启动前检查该变量非空，避免带着空密钥上线。`SECRET_ENV` 负责下发，`REQUIRED_ENV` 负责在服务器侧兜底校验。
 
 ## 回滚
 
