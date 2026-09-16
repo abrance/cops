@@ -8,6 +8,13 @@ on:
       - "apps/**"
       - "scripts/**"
       - ".github/workflows/deploy.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/**"
+      - "scripts/**"
+      - ".github/workflows/deploy.yml"
   schedule:
     # 每天 03:17 UTC 重建全部期望状态，纠正人工改动造成的漂移
     - cron: "17 3 * * *"
@@ -42,15 +49,22 @@ jobs:
         run: |
           set -euo pipefail
           requested="${{ github.event.inputs.app }}"
+          event="${{ github.event_name }}"
           if [ -n "${requested}" ]; then
             # 手动指定应用
             candidates="${requested}"
-          elif [ "${{ github.event_name }}" != "push" ]; then
+          elif [ "${event}" = "schedule" ] || [ "${event}" = "workflow_dispatch" ]; then
             # 定时任务或未指定应用的手动触发：部署全部
             candidates="$(ls apps)"
           else
-            base="${{ github.event.before }}"
-            head="${{ github.sha }}"
+            # push 与 pull_request：按变更文件计算受影响应用
+            if [ "${event}" = "pull_request" ]; then
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+            else
+              base="${{ github.event.before }}"
+              head="${{ github.sha }}"
+            fi
             if [ -z "${base}" ] \
               || [ "${base}" = "0000000000000000000000000000000000000000" ] \
               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
@@ -112,7 +126,8 @@ jobs:
     needs:
       - resolve
       - validate
-    if: needs.resolve.outputs.apps != '[]'
+    # PR 只校验不部署；部署仅发生在合入 main、定时任务或手动触发时
+    if: needs.resolve.outputs.apps != '[]' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: production
     strategy:
@@ -173,6 +188,54 @@ jobs:
           tar cz -C "apps/${{ matrix.app }}" . \
             | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
                 "${DEPLOY_USER}@${DEPLOY_HOST}" "tar xz -C '${remote_dir}'"
+
+      - name: 下发运行期密钥
+        env:
+          # GitHub Actions 不支持按变量名动态读取 secret，新增应用的运行期密钥时
+          # 在此追加一行，并在对应 apps/<app>/app.conf 的 SECRET_ENV 中声明变量名
+          PTDOC_DATA_KEY: ${{ secrets.PTDOC_DATA_KEY }}
+        run: |
+          set -euo pipefail
+          app="${{ matrix.app }}"
+          conf="apps/${app}/app.conf"
+
+          secret_keys=""
+          if [ -f "${conf}" ]; then
+            # shellcheck disable=SC1090
+            . "${conf}"
+            secret_keys="${SECRET_ENV:-}"
+          fi
+
+          if [ -z "${secret_keys}" ]; then
+            echo "应用 ${app} 未声明 SECRET_ENV，跳过分发"
+            exit 0
+          fi
+
+          # 只检查变量是否存在，不打印任何取值
+          payload=""
+          missing=""
+          for key in ${secret_keys}; do
+            value="${!key:-}"
+            if [ -z "${value}" ]; then
+              missing="${missing} ${key}"
+              continue
+            fi
+            payload="${payload}${key}=${value}"$'\n'
+          done
+
+          if [ -n "${missing}" ]; then
+            echo "缺少 GitHub Actions secret:${missing}" >&2
+            exit 1
+          fi
+
+          # 通过 stdin 传输，密钥不出现在命令行、不落盘到 runner
+          remote_file="/opt/cops/secrets/${app}.env"
+          printf '%s' "${payload}" \
+            | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" \
+                "umask 077; mkdir -p /opt/cops/secrets; cat > '${remote_file}'; chmod 600 '${remote_file}'"
+
+          echo "已下发 ${app} 运行期密钥（$(printf '%s' "${secret_keys}" | wc -w) 个变量）"
 
       - name: 执行部署
         run: |
