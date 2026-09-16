@@ -85,53 +85,14 @@ tar xzf "${TMP}/${ARTIFACT_NAME}" -C "${TMP}"
 PKG="${TMP}/${PKG_NAME}"
 [ -f "${PKG}/deploy/install.sh" ] || die "包内缺少 deploy/install.sh"
 
-# ---------- 退役旧 apiserver（改名前组件）----------
+# ---------- 期望状态与安装判定 ----------
+# 期望状态 = 产物（名 + sha256）+ 全部期望配置内容。
+# 未变化时完全跳过安装，避免无谓停机，也避免覆盖运行中的二进制。
+# 安装前需停止的 unit：现役四件套 + 改名前的 apiserver
+STOP_UNITS=(vectorman-apiserver.service "${UNITS[@]}")
 OLD_UNIT=/etc/systemd/system/vectorman-apiserver.service
 OLD_DIR="${ROOT}/apiserver"
 NEW_DATA="${ROOT}/dataserver/data"
-
-if sudo_run test -f "${OLD_UNIT}"; then
-  log "停止旧服务 vectorman-apiserver.service"
-  sudo_run systemctl stop vectorman-apiserver.service 2>/dev/null || true
-fi
-
-# 迁移历史数据：仅当目标不存在时执行一次
-if sudo_run test -d "${OLD_DIR}/data" && ! sudo_run test -e "${NEW_DATA}"; then
-  log "迁移数据 ${OLD_DIR}/data -> ${NEW_DATA}"
-  sudo_run mkdir -p "${ROOT}/dataserver"
-  sudo_run mv "${OLD_DIR}/data" "${NEW_DATA}"
-fi
-
-# ---------- 安装 ----------
-log "安装到 ${ROOT}（install.sh all --with-systemd）"
-sudo_run bash "${PKG}/deploy/install.sh" all --dest "${ROOT}" --with-systemd
-
-# ---------- 下发期望配置 ----------
-log "覆盖运行时配置"
-sudo_run mkdir -p "${ROOT}/dataserver/data"
-while IFS=: read -r name dest; do
-  sudo_run mkdir -p "$(dirname "${dest}")"
-  sudo_run cp "${APP_DIR}/conf/${name}" "${dest}"
-done <<EOF
-config.toml:${ROOT}/dataserver/config.toml
-gse-server.toml:${ROOT}/gse-server/conf/gse-server.toml
-gse-agent.toml:${ROOT}/gse-agent/conf/gse-agent.toml
-console.toml:${ROOT}/console/conf/console.toml
-EOF
-
-# ---------- 退役旧 apiserver 的 unit 与目录 ----------
-if sudo_run test -f "${OLD_UNIT}"; then
-  log "退役旧 unit ${OLD_UNIT}"
-  sudo_run systemctl disable vectorman-apiserver.service 2>/dev/null || true
-  sudo_run rm -f "${OLD_UNIT}"
-fi
-if sudo_run test -d "${OLD_DIR}"; then
-  log "移除旧组件目录 ${OLD_DIR}"
-  sudo_run rm -rf "${OLD_DIR}"
-fi
-
-# ---------- 应用期望状态（幂等）----------
-sudo_run mkdir -p "${ROOT}/deploy"
 STATE_FILE="${ROOT}/deploy/vectorman-state.sha256"
 desired_state="$(
   {
@@ -145,22 +106,78 @@ desired_state="$(
 )"
 previous_state="$(sudo_run cat "${STATE_FILE}" 2>/dev/null || true)"
 
-sudo_run systemctl daemon-reload
-sudo_run systemctl enable "${UNITS[@]}" >/dev/null 2>&1 || true
+if [ "${desired_state}" = "${previous_state}" ]; then
+  # 幂等快路径：不停止、不安装、不重启，只确保服务在运行
+  log "期望状态未变化，跳过安装"
+  for unit in "${UNITS[@]}"; do
+    if ! sudo_run systemctl is-active --quiet "${unit}"; then
+      log "  ${unit} 未运行，启动"
+      sudo_run systemctl start "${unit}"
+    fi
+  done
+else
+  # ---------- 停止现有服务 ----------
+  # install.sh 用 cp 就地覆盖二进制。对正在运行的进程覆盖会得到 ETXTBSY，
+  # 因此安装前必须停掉所有 vectorman unit（含改名前的 apiserver）。
+  for unit in "${STOP_UNITS[@]}"; do
+    if sudo_run systemctl is-active --quiet "${unit}" 2>/dev/null; then
+      log "停止 ${unit}"
+      sudo_run systemctl stop "${unit}" || true
+    fi
+  done
 
-if [ "${desired_state}" != "${previous_state}" ]; then
+  # 等进程完全退出，确保文件句柄已释放
+  for _ in $(seq 1 20); do
+    busy=0
+    for unit in "${STOP_UNITS[@]}"; do
+      if sudo_run systemctl is-active --quiet "${unit}" 2>/dev/null; then
+        busy=1
+      fi
+    done
+    [ "${busy}" -eq 0 ] && break
+    sleep 1
+  done
+
+  # 迁移历史数据：仅当目标不存在时执行一次
+  if sudo_run test -d "${OLD_DIR}/data" && ! sudo_run test -e "${NEW_DATA}"; then
+    log "迁移数据 ${OLD_DIR}/data -> ${NEW_DATA}"
+    sudo_run mkdir -p "${ROOT}/dataserver"
+    sudo_run mv "${OLD_DIR}/data" "${NEW_DATA}"
+  fi
+
+  log "安装到 ${ROOT}（install.sh all --with-systemd）"
+  sudo_run bash "${PKG}/deploy/install.sh" all --dest "${ROOT}" --with-systemd
+
+  log "覆盖运行时配置"
+  sudo_run mkdir -p "${ROOT}/dataserver/data" "${ROOT}/deploy"
+  while IFS=: read -r name dest; do
+    sudo_run mkdir -p "$(dirname "${dest}")"
+    sudo_run cp "${APP_DIR}/conf/${name}" "${dest}"
+  done <<EOF
+config.toml:${ROOT}/dataserver/config.toml
+gse-server.toml:${ROOT}/gse-server/conf/gse-server.toml
+gse-agent.toml:${ROOT}/gse-agent/conf/gse-agent.toml
+console.toml:${ROOT}/console/conf/console.toml
+EOF
+
+  # 退役改名前的旧 apiserver
+  if sudo_run test -f "${OLD_UNIT}"; then
+    log "退役旧 unit ${OLD_UNIT}"
+    sudo_run systemctl disable vectorman-apiserver.service 2>/dev/null || true
+    sudo_run rm -f "${OLD_UNIT}"
+  fi
+  if sudo_run test -d "${OLD_DIR}"; then
+    log "移除旧组件目录 ${OLD_DIR}"
+    sudo_run rm -rf "${OLD_DIR}"
+  fi
+
+  sudo_run systemctl daemon-reload
+  sudo_run systemctl enable "${UNITS[@]}" >/dev/null 2>&1 || true
   log "期望状态有变化，重启服务"
   sudo_run systemctl restart "${UNITS[@]}"
   # 注意：不能用 `printf | sudo_run tee`——sudo -S 会先把 stdin 的密码行吃掉，
   # tee 就读不到内容了。改为经 argv 写文件，不经过 stdin。
   sudo_run bash -c 'printf "%s\n" "$1" > "$2"' _ "${desired_state}" "${STATE_FILE}"
-else
-  log "期望状态未变化，确保服务在运行"
-  for unit in "${UNITS[@]}"; do
-    if ! sudo_run systemctl is-active --quiet "${unit}"; then
-      sudo_run systemctl start "${unit}"
-    fi
-  done
 fi
 
 # ---------- 健康探测 ----------
