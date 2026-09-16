@@ -90,10 +90,29 @@ jobs:
               echo "忽略非法应用名: ${app}" >&2
               continue
             fi
-            if [ ! -f "apps/${app}/compose.yaml" ]; then
-              echo "忽略缺少 compose.yaml 的应用: ${app}" >&2
-              continue
+            mode="compose"
+            if [ -f "apps/${app}/app.conf" ]; then
+              mode="$(sed -n 's/^DEPLOY_MODE=//p' "apps/${app}/app.conf" | tail -1)"
+              mode="${mode:-compose}"
             fi
+            case "${mode}" in
+              compose)
+                if [ ! -f "apps/${app}/compose.yaml" ]; then
+                  echo "忽略缺少 compose.yaml 的 compose 应用: ${app}" >&2
+                  continue
+                fi
+                ;;
+              native)
+                if [ ! -f "apps/${app}/native/deploy-native.sh" ]; then
+                  echo "忽略缺少 native/deploy-native.sh 的 native 应用: ${app}" >&2
+                  continue
+                fi
+                ;;
+              *)
+                echo "忽略未知 DEPLOY_MODE=${mode} 的应用: ${app}" >&2
+                continue
+                ;;
+            esac
             apps="$(jq -c --arg a "${app}" '. + [$a]' <<<"${apps}")"
           done
 
@@ -116,10 +135,25 @@ jobs:
       - name: 校验编排文件
         run: |
           set -euo pipefail
-          docker compose \
-            --project-directory "apps/${{ matrix.app }}" \
-            -f "apps/${{ matrix.app }}/compose.yaml" \
-            config --quiet
+          app="apps/${{ matrix.app }}"
+          mode="compose"
+          if [ -f "${app}/app.conf" ]; then
+            mode="$(sed -n 's/^DEPLOY_MODE=//p' "${app}/app.conf" | tail -1)"
+            mode="${mode:-compose}"
+          fi
+          if [ "${mode}" = "native" ]; then
+            # native 应用非容器交付：校验部署脚本语法与期望状态文件齐备
+            test -f "${app}/.env"
+            test -f "${app}/app.conf"
+            test -d "${app}/conf"
+            bash -n "${app}/native/deploy-native.sh"
+            echo "native 应用 ${app} 校验通过"
+          else
+            docker compose \
+              --project-directory "${app}" \
+              -f "${app}/compose.yaml" \
+              config --quiet
+          fi
 
   deploy:
     name: 部署 ${{ matrix.app }}
@@ -194,6 +228,8 @@ jobs:
           # GitHub Actions 不支持按变量名动态读取 secret，新增应用的运行期密钥时
           # 在此追加一行，并在对应 apps/<app>/app.conf 的 SECRET_ENV 中声明变量名
           PTDOC_DATA_KEY: ${{ secrets.PTDOC_DATA_KEY }}
+          # vectorman 为 native 部署：sudo 密码与 SSH 密码相同，复用 DEPLOY_PASSWORD
+          VECTORMAN_SUDO_PASS: ${{ secrets.DEPLOY_PASSWORD }}
         run: |
           set -euo pipefail
           app="${{ matrix.app }}"

@@ -1,0 +1,17 @@
+# dataserver 期望配置（由 cops 下发，勿在云主机手改）
+#
+# 顶层键必须写在任何 [表] 之前，否则会被归入该表。
+data_path = "/opt/vectorman/dataserver/data"
+# 单端口托管内置前端：与 SQL HTTP 同端口
+http_web_dir = "web"
+# 清理任务对账 gse-server 台账接口
+gse_admin_url = "http://127.0.0.1:7101"
+
+[sql_http]
+listen = "0.0.0.0:8081"
+
+[prom_http]
+listen = "0.0.0.0:9090"
+
+[auth]
+enabled = false

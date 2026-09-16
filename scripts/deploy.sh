@@ -20,24 +20,15 @@ SECRETS_FILE="${BASE_PATH}/secrets/${APP}.env"
 
 log() { printf '==> [%s] %s\n' "${APP}" "$*"; }
 
-if [ ! -f "${APP_DIR}/compose.yaml" ]; then
-  echo "未找到 ${APP_DIR}/compose.yaml，无法部署" >&2
-  exit 1
-fi
-
-# 应用元数据（健康检查配置）
+# 应用元数据（部署模式、健康检查、必需变量）
 if [ -f "${APP_DIR}/app.conf" ]; then
   # shellcheck disable=SC1090,SC1091
   . "${APP_DIR}/app.conf"
 fi
 
-cd "${APP_DIR}"
+MODE="${DEPLOY_MODE:-compose}"
 
-COMPOSE_ARGS=(--env-file .env)
-if [ -f "${SECRETS_FILE}" ]; then
-  log "加载运行期密钥 ${SECRETS_FILE}"
-  COMPOSE_ARGS+=(--env-file "${SECRETS_FILE}")
-fi
+cd "${APP_DIR}"
 
 # 从 .env 与 secrets 文件按顺序取值（后者优先），用于必需变量检查
 env_lookup() {
@@ -59,6 +50,28 @@ for key in ${REQUIRED_ENV:-}; do
     exit 1
   fi
 done
+
+# native 模式：非容器交付（发布包 + systemd），交给应用自带的部署脚本
+if [ "${MODE}" = "native" ]; then
+  NATIVE_SCRIPT="${APP_DIR}/native/deploy-native.sh"
+  if [ ! -f "${NATIVE_SCRIPT}" ]; then
+    echo "DEPLOY_MODE=native 但缺少 ${NATIVE_SCRIPT}" >&2
+    exit 1
+  fi
+  log "native 部署模式"
+  exec bash "${NATIVE_SCRIPT}" "${APP}"
+fi
+
+if [ ! -f "${APP_DIR}/compose.yaml" ]; then
+  echo "未找到 ${APP_DIR}/compose.yaml，无法部署" >&2
+  exit 1
+fi
+
+COMPOSE_ARGS=(--env-file .env)
+if [ -f "${SECRETS_FILE}" ]; then
+  log "加载运行期密钥 ${SECRETS_FILE}"
+  COMPOSE_ARGS+=(--env-file "${SECRETS_FILE}")
+fi
 
 log "拉取镜像"
 docker compose "${COMPOSE_ARGS[@]}" pull
