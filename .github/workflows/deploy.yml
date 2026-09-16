@@ -1,0 +1,167 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/**"
+      - "scripts/**"
+      - ".github/workflows/deploy.yml"
+  schedule:
+    # 每天 03:17 UTC 重建全部期望状态，纠正人工改动造成的漂移
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "只部署指定应用（apps/ 下的目录名）；留空表示全部"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: 解析待部署应用
+    runs-on: ubuntu-latest
+    outputs:
+      apps: ${{ steps.detect.outputs.apps }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 计算应用列表
+        id: detect
+        run: |
+          set -euo pipefail
+          requested="${{ github.event.inputs.app }}"
+          if [ -n "${requested}" ]; then
+            candidates="${requested}"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            if [ -z "${base}" ] || [ "${base}" = "0000000000000000000000000000000000000000" ]; then
+              base="HEAD~1"
+            fi
+            candidates="$(git diff --name-only "${base}" "${head}" -- apps | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+          else
+            candidates="$(ls apps)"
+          fi
+
+          apps="[]"
+          for app in ${candidates}; do
+            if ! printf '%s' "${app}" | grep -Eq '^[a-z0-9][a-z0-9-]*$'; then
+              echo "忽略非法应用名: ${app}" >&2
+              continue
+            fi
+            if [ ! -f "apps/${app}/compose.yaml" ]; then
+              echo "忽略缺少 compose.yaml 的应用: ${app}" >&2
+              continue
+            fi
+            apps="$(jq -c --arg a "${app}" '. + [$a]' <<<"${apps}")"
+          done
+
+          echo "待部署应用: ${apps}"
+          echo "apps=${apps}" >> "${GITHUB_OUTPUT}"
+
+  validate:
+    name: 校验 ${{ matrix.app }}
+    needs: resolve
+    if: needs.resolve.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJSON(needs.resolve.outputs.apps) }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 校验编排文件
+        run: |
+          set -euo pipefail
+          docker compose \
+            --project-directory "apps/${{ matrix.app }}" \
+            -f "apps/${{ matrix.app }}/compose.yaml" \
+            config --quiet
+
+  deploy:
+    name: 部署 ${{ matrix.app }}
+    needs:
+      - resolve
+      - validate
+    if: needs.resolve.outputs.apps != '[]'
+    runs-on: ubuntu-latest
+    environment: production
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        app: ${{ fromJSON(needs.resolve.outputs.apps) }}
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      SSHPASS: ${{ secrets.DEPLOY_PASSWORD }}
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 校验部署凭据
+        run: |
+          set -euo pipefail
+          missing=""
+          for name in DEPLOY_HOST DEPLOY_USER SSHPASS; do
+            if [ -z "${!name:-}" ]; then
+              missing="${missing} ${name}"
+            fi
+          done
+          if [ -n "${missing}" ]; then
+            echo "缺少 GitHub Actions secret:${missing}" >&2
+            exit 1
+          fi
+          port="${{ secrets.DEPLOY_PORT }}"
+          echo "DEPLOY_PORT=${port:-22}" >> "${GITHUB_ENV}"
+
+      - name: 安装 sshpass
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq sshpass
+
+      - name: 配置 SSH 主机密钥
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          if [ -n "${{ secrets.DEPLOY_KNOWN_HOSTS }}" ]; then
+            printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" > ~/.ssh/known_hosts 2>/dev/null
+            echo "已用 ssh-keyscan 获取主机密钥；建议改用 DEPLOY_KNOWN_HOSTS 固定指纹"
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: 同步应用文件到云主机
+        run: |
+          set -euo pipefail
+          remote_dir="/opt/cops/apps/${{ matrix.app }}"
+          sshpass -e ssh -p "${DEPLOY_PORT}" \
+            -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "mkdir -p '${remote_dir}' /opt/cops/secrets"
+          tar cz -C "apps/${{ matrix.app }}" . \
+            | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+                "${DEPLOY_USER}@${DEPLOY_HOST}" "tar xz -C '${remote_dir}'"
+
+      - name: 执行部署
+        run: |
+          set -euo pipefail
+          sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- '${{ matrix.app }}'" \
+            < scripts/deploy.sh

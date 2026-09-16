@@ -1,0 +1,76 @@
+# lems 期望状态：EMS 主服务 + ess_demo Modbus 从站
+#
+# 由 cops 部署流程在云主机 /opt/cops/apps/lems 下执行：
+#   docker compose --env-file .env pull
+#   docker compose --env-file .env up -d
+#
+# 镜像均为公开 GHCR 包，可匿名拉取，无需 registry 凭据。
+name: lems
+
+services:
+  lems:
+    image: ${LEMS_IMAGE}:${LEMS_IMAGE_TAG}
+    container_name: lems
+    restart: unless-stopped
+    pull_policy: always
+    platform: linux/amd64
+    depends_on:
+      - emsdevice
+    environment:
+      APP_PROFILE: ${APP_PROFILE}
+    command:
+      - ./ems
+      - --web=true
+      - --force=true
+    ports:
+      - "${LEMS_PORT}:80"
+    volumes:
+      - lems-data:/app/out
+    healthcheck:
+      # 必须用 GET 探测：HEAD 请求会被路由拒绝，导致健康检查误报 unhealthy
+      test:
+        - CMD
+        - wget
+        - -q
+        - -O
+        - /dev/null
+        - http://localhost:80/api/health
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  emsdevice:
+    image: ${EMSDEVICE_IMAGE}:${EMSDEVICE_IMAGE_TAG}
+    container_name: emsdevice
+    restart: unless-stopped
+    pull_policy: always
+    platform: linux/amd64
+    command:
+      - --listen
+      - tcp://0.0.0.0:1502
+      - --unit-id
+      - "1"
+    environment:
+      EMSDEVICE_CONFIG: /etc/emsdevice/config.json
+      EMSDEVICE_MOCK: ${EMSDEVICE_MOCK}
+      EMSDEVICE_MOCK_INTERVAL: ${EMSDEVICE_MOCK_INTERVAL}
+      EMSDEVICE_MOCK_SOC: ${EMSDEVICE_MOCK_SOC}
+      EMSDEVICE_MOCK_POWER: ${EMSDEVICE_MOCK_POWER}
+    volumes:
+      - ./emsdevice.json:/etc/emsdevice/config.json:ro
+    ports:
+      - "${EMSDEVICE_PORT}:1502"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  lems-data:

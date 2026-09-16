@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# cops 部署脚本：在云主机上执行，应用单个应用的期望状态。
+#
+# 由 .github/workflows/deploy.yml 通过 stdin 传入：
+#   ssh <host> "bash -s -- <app>" < scripts/deploy.sh
+#
+# 约定的服务器目录：
+#   /opt/cops/apps/<app>/       期望状态（由 CI 同步，含 compose.yaml 与 .env）
+#   /opt/cops/secrets/<app>.env 可选运行期密钥（服务器本地维护，不入库）
+set -euo pipefail
+
+APP="${1:?用法: deploy.sh <app>}"
+BASE_PATH="${COPS_BASE_PATH:-/opt/cops}"
+APP_DIR="${BASE_PATH}/apps/${APP}"
+SECRETS_FILE="${BASE_PATH}/secrets/${APP}.env"
+
+log() { printf '==> [%s] %s\n' "${APP}" "$*"; }
+
+if [ ! -f "${APP_DIR}/compose.yaml" ]; then
+  echo "未找到 ${APP_DIR}/compose.yaml，无法部署" >&2
+  exit 1
+fi
+
+# 应用元数据（健康检查配置）
+if [ -f "${APP_DIR}/app.conf" ]; then
+  # shellcheck disable=SC1090,SC1091
+  . "${APP_DIR}/app.conf"
+fi
+
+cd "${APP_DIR}"
+
+COMPOSE_ARGS=(--env-file .env)
+if [ -f "${SECRETS_FILE}" ]; then
+  log "加载运行期密钥 ${SECRETS_FILE}"
+  COMPOSE_ARGS+=(--env-file "${SECRETS_FILE}")
+fi
+
+log "拉取镜像"
+docker compose "${COMPOSE_ARGS[@]}" pull
+
+log "应用期望状态"
+docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans
+
+if [ -n "${HEALTH_CONTAINER:-}" ]; then
+  log "等待容器 ${HEALTH_CONTAINER} 健康"
+  deadline=$(( $(date +%s) + ${HEALTH_TIMEOUT:-180} ))
+  while :; do
+    status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${HEALTH_CONTAINER}" 2>/dev/null || echo missing)"
+    case "${status}" in
+      healthy | running)
+        log "容器 ${HEALTH_CONTAINER} 状态: ${status}"
+        break
+        ;;
+      unhealthy | exited | dead)
+        log "容器 ${HEALTH_CONTAINER} 状态异常: ${status}"
+        docker logs --tail 50 "${HEALTH_CONTAINER}" 2>&1 || true
+        exit 1
+        ;;
+    esac
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      log "等待容器 ${HEALTH_CONTAINER} 超时（最后状态: ${status}）"
+      docker logs --tail 50 "${HEALTH_CONTAINER}" 2>&1 || true
+      exit 1
+    fi
+    sleep 5
+  done
+fi
+
+if [ -n "${HEALTH_URL:-}" ]; then
+  log "探测健康接口 ${HEALTH_URL}"
+  if ! curl -fsS --max-time 10 "${HEALTH_URL}" >/dev/null; then
+    log "健康探测失败: ${HEALTH_URL}"
+    exit 1
+  fi
+  log "健康探测通过"
+fi
+
+log "当前容器状态"
+docker compose "${COMPOSE_ARGS[@]}" ps
+log "完成"

@@ -1,0 +1,24 @@
+{
+  "listen": "tcp://0.0.0.0:1502",
+  "unitId": 1,
+  "mock": {
+    "mode": "live",
+    "interval": "1s",
+    "status": 2,
+    "power": 5,
+    "soc": 80,
+    "generatedEnergy": 120,
+    "consumedEnergy": 150,
+    "maxChargePower": 50,
+    "maxDischargePower": 50,
+    "deviceControl": 1,
+    "targetPower": 5,
+    "powerCapacity": 100,
+    "energyCapacity": 200,
+    "minSoc": 10,
+    "maxSoc": 95,
+    "chargeEfficiency": 95,
+    "socJitter": 2,
+    "powerJitter": 1.5
+  }
+}
