@@ -110,3 +110,13 @@ git diff --name-only HEAD~1 HEAD -- apps | cut -d/ -f2 | sort -u
 
 - `deploy.sh` 使用 `--remove-orphans`：当某个服务从编排文件中移除时，会停掉并删除该项目下多余的容器。它只影响容器，不会删除数据卷，`lems-data` 等持久化数据不受影响。
 - 数据不随仓库走：`ptdoc` 的 SQLite 库挂载自 `/opt/ptdoc/data`，`lems` 使用命名卷 `lems-data`。GitOps 只管理编排与配置，删容器不丢数据。
+
+## 文档
+
+服务负责人请从 [`docs/README.md`](docs/README.md) 开始：
+
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/onboarding.md`](docs/onboarding.md) | 新增服务接入的完整步骤与模板 |
+| [`docs/best-practices.md`](docs/best-practices.md) | 最佳实践与已踩过的坑 |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 部署失败、容器异常、数据问题的处理 |
