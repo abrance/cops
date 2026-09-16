@@ -273,6 +273,42 @@ jobs:
 
           echo "已下发 ${app} 运行期密钥（$(printf '%s' "${secret_keys}" | wc -w) 个变量）"
 
+      - name: 暂存 native 应用产物
+        run: |
+          set -euo pipefail
+          app="${{ matrix.app }}"
+          dir="apps/${app}"
+
+          mode="compose"
+          if [ -f "${dir}/app.conf" ]; then
+            mode="$(sed -n 's/^DEPLOY_MODE=//p' "${dir}/app.conf" | tail -1)"
+            mode="${mode:-compose}"
+          fi
+          if [ "${mode}" != "native" ] || [ ! -f "${dir}/.env" ]; then
+            echo "应用 ${app} 非 native，跳过产物暂存"
+            exit 0
+          fi
+
+          # shellcheck disable=SC1090
+          set -a; . "${dir}/.env"; set +a
+          if [ -z "${NATIVE_ARTIFACT_URL:-}" ]; then
+            echo "应用 ${app} 未声明 NATIVE_ARTIFACT_URL，跳过产物暂存"
+            exit 0
+          fi
+
+          name="${NATIVE_ARTIFACT_URL##*/}"
+          name="${name%%\?*}"
+          tmp="${RUNNER_TEMP}/${name}"
+          # 在 runner 侧下载并校验：云主机直连 GitHub 不可靠
+          curl -fSL --retry 3 --connect-timeout 20 -o "${tmp}" "${NATIVE_ARTIFACT_URL}"
+          printf '%s  %s\n' "${NATIVE_ARTIFACT_SHA256}" "${tmp}" | sha256sum -c -
+
+          remote_file="/opt/cops/cache/${app}/${name}"
+          sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "umask 077; mkdir -p '/opt/cops/cache/${app}'; cat > '${remote_file}'" < "${tmp}"
+          echo "已暂存产物 ${name} 到云主机 ${remote_file}"
+
       - name: 执行部署
         run: |
           set -euo pipefail

@@ -31,12 +31,13 @@ die() { echo "==> [${APP}] ERROR: $*" >&2; exit 1; }
 . "${APP_DIR}/app.conf"
 
 ROOT="${VECTORMAN_INSTALL_ROOT:?VECTORMAN_INSTALL_ROOT 未设置}"
-VERSION="${VECTORMAN_VERSION:?VECTORMAN_VERSION 未设置}"
-SHA256="${VECTORMAN_TARBALL_SHA256:?VECTORMAN_TARBALL_SHA256 未设置}"
+ARTIFACT_URL="${NATIVE_ARTIFACT_URL:?NATIVE_ARTIFACT_URL 未设置}"
+SHA256="${NATIVE_ARTIFACT_SHA256:?NATIVE_ARTIFACT_SHA256 未设置}"
 : "${HEALTH_URLS:?HEALTH_URLS 未设置}"
-REL="${VERSION#v}"
-ASSET="vectorman-${REL}-linux-x86_64.tar.gz"
-URL="https://github.com/abrance/vectorman/releases/download/${VERSION}/${ASSET}"
+ARTIFACT_NAME="${ARTIFACT_URL##*/}"
+PKG_NAME="${ARTIFACT_NAME%.tar.gz}"
+CACHE_DIR="${BASE_PATH}/cache/${APP}"
+CACHE_FILE="${CACHE_DIR}/${ARTIFACT_NAME}"
 
 UNITS=(
   vectorman-gse-server.service
@@ -66,16 +67,22 @@ log "sudo 认证通过"
 TMP="$(mktemp -d)"
 trap 'rm -rf "${TMP}"' EXIT
 
-log "下载 ${URL}"
-curl -fSL --retry 3 --connect-timeout 20 -o "${TMP}/${ASSET}" "${URL}" \
-  || die "下载失败: ${URL}"
+# 优先使用 CI 暂存的产物；主机直连 GitHub 不可靠，下载仅作回退
+if [ -f "${CACHE_FILE}" ]; then
+  log "使用 CI 暂存产物 ${CACHE_FILE}"
+  cp "${CACHE_FILE}" "${TMP}/${ARTIFACT_NAME}"
+else
+  log "未找到暂存产物，回退为主机下载 ${ARTIFACT_URL}"
+  curl -fSL --retry 3 --connect-timeout 20 -o "${TMP}/${ARTIFACT_NAME}" "${ARTIFACT_URL}" \
+    || die "下载失败: ${ARTIFACT_URL}"
+fi
 
 log "校验 sha256"
-printf '%s  %s\n' "${SHA256}" "${TMP}/${ASSET}" | sha256sum -c - \
+printf '%s  %s\n' "${SHA256}" "${TMP}/${ARTIFACT_NAME}" | sha256sum -c - \
   || die "sha256 校验失败（期望 ${SHA256}）"
 
-tar xzf "${TMP}/${ASSET}" -C "${TMP}"
-PKG="${TMP}/vectorman-${REL}-linux-x86_64"
+tar xzf "${TMP}/${ARTIFACT_NAME}" -C "${TMP}"
+PKG="${TMP}/${PKG_NAME}"
 [ -f "${PKG}/deploy/install.sh" ] || die "包内缺少 deploy/install.sh"
 
 # ---------- 退役旧 apiserver（改名前组件）----------
@@ -128,7 +135,8 @@ sudo_run mkdir -p "${ROOT}/deploy"
 STATE_FILE="${ROOT}/deploy/vectorman-state.sha256"
 desired_state="$(
   {
-    echo "version=${VERSION}"
+    echo "artifact=${ARTIFACT_NAME}"
+    echo "sha256=${SHA256}"
     for f in "${APP_DIR}"/conf/*; do
       echo "--- $(basename "${f}") ---"
       cat "${f}"

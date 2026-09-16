@@ -105,7 +105,7 @@
 与 compose 模式的差异：
 
 - 校验阶段不跑 `docker compose config`，改为校验部署脚本语法与期望状态文件齐备。
-- 产物版本在 `apps/<app>/.env` 中锁定（`VECTORMAN_VERSION` + tarball `sha256`），回滚即改版本号。
+- 产物在 `apps/<app>/.env` 中用 `NATIVE_ARTIFACT_URL` + `NATIVE_ARTIFACT_SHA256` 锁定，回滚即改回上一版本。CI 在 runner 侧下载并校验后暂存到云主机 `/opt/cops/cache/<app>/`；云主机直连 GitHub 不稳定，部署脚本优先用暂存文件，缺失时才回退下载。
 - 需要 root 时，由 `native/deploy-native.sh` 用 `sudo -S` 提权；sudo 密码复用 `DEPLOY_PASSWORD`，经 `SECRET_ENV` 下发到 `/opt/cops/secrets/<app>.env`，脚本读取后立即清除。
 - 幂等由脚本内的期望状态哈希保证：期望状态不变时不重启服务。
 
@@ -113,7 +113,7 @@
 
 ```text
 apps/vectorman/
-├── .env                    # 版本、tarball sha256、安装根目录
+├── .env                    # 产物 URL + sha256、安装根目录
 ├── app.conf                # DEPLOY_MODE=native、HEALTH_URLS、SECRET_ENV
 ├── conf/                   # 期望运行时配置（仓库即事实源）
 │   ├── config.toml         # dataserver
