@@ -167,3 +167,15 @@ git push -u origin 260916-feat-add-myapp
 - [ ] 无任何密钥、密码、token 入库。
 - [ ] 敏感变量已在 `SECRET_ENV`、GitHub Secrets、`deploy.yml env:` 三处登记。
 - [ ] `docker compose config --quiet` 本地通过。
+
+## 附录：native 应用（发布包 + systemd）
+
+发布物不是容器镜像（例如静态二进制 tarball）时，走 native 模式：
+
+1. `apps/<服务>/app.conf` 加 `DEPLOY_MODE=native`、`HEALTH_URLS="<空格分隔的 URL 列表>"`，以及 `SECRET_ENV` / `REQUIRED_ENV`。
+2. `apps/<服务>/.env` 用 `NATIVE_ARTIFACT_URL` + `NATIVE_ARTIFACT_SHA256` 锁定产物；CI 会在 runner 侧下载校验并暂存到云主机 `/opt/cops/cache/<服务>/`。
+3. `apps/<服务>/conf/` 放期望运行时配置。
+4. `apps/<服务>/native/deploy-native.sh` 负责下载、校验、安装、迁移、重启与健康探测；校验阶段会跑 `bash -n`。
+5. 若需要 root，`SECRET_ENV` 声明密码变量，并在 `deploy.yml` 的「下发运行期密钥」步骤 `env:` 映射（vectorman 复用 `DEPLOY_PASSWORD`）。
+
+可直接参考 `apps/vectorman/`。

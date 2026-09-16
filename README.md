@@ -15,6 +15,7 @@
 - 触发方式：PR 只做编排校验不部署；合入 `main` 后只部署受影响应用；`workflow_dispatch` 可手动指定或全量；每天定时全量重建以纠正漂移。
 - 镜像来源：应用镜像由各自源码仓库构建后推送到公开 GHCR 包，服务器可匿名拉取，本仓库不需要任何 registry 凭据。
 - 密钥分层：SSH 主机 / 账号 / 密码放 GitHub Secrets；应用运行期密钥放云主机 `/opt/cops/secrets/<app>.env`（权限 600，不入库）。
+- 部署模式：默认 `compose`（容器编排）；`app.conf` 声明 `DEPLOY_MODE=native` 的应用走发布包 + systemd 部署，见下文「native 部署模式」。
 
 ## 已纳管应用
 
@@ -22,6 +23,7 @@
 | --- | --- | --- | --- |
 | `lems` | `lems`、`emsdevice` | `ghcr.io/abrance/ems`、`ghcr.io/abrance/emsdevice` | EMS 主服务与 ess_demo Modbus 从站 |
 | `ptdoc` | `ptdoc` | `ghcr.io/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
+| `vectorman` | 无（systemd） | GitHub Releases 静态二进制包 | GSE 采集链路的 6 个组件，native 部署，数据保留在 `/opt/vectorman` |
 
 ## 目录结构
 
@@ -95,6 +97,32 @@
 ## 回滚
 
 把 `apps/<app>/.env` 中的镜像 tag 改回上一个版本并提交。定时全量重建也会把服务器状态拉回仓库声明。
+
+## native 部署模式
+
+部分服务不交付容器，而是发布包（静态二进制 tarball）+ `systemd` unit。此类应用用 `DEPLOY_MODE=native` 声明，`scripts/deploy.sh` 会把部署交给应用自带的 `native/deploy-native.sh`，仍走同一套「改仓库 → 合入 main → 自动部署」流程。
+
+与 compose 模式的差异：
+
+- 校验阶段不跑 `docker compose config`，改为校验部署脚本语法与期望状态文件齐备。
+- 产物在 `apps/<app>/.env` 中用 `NATIVE_ARTIFACT_URL` + `NATIVE_ARTIFACT_SHA256` 锁定，回滚即改回上一版本。CI 在 runner 侧下载并校验后暂存到云主机 `/opt/cops/cache/<app>/`；云主机直连 GitHub 不稳定，部署脚本优先用暂存文件，缺失时才回退下载。
+- 需要 root 时，由 `native/deploy-native.sh` 用 `sudo -S` 提权；sudo 密码复用 `DEPLOY_PASSWORD`，经 `SECRET_ENV` 下发到 `/opt/cops/secrets/<app>.env`，脚本读取后立即清除。
+- 幂等由脚本内的期望状态哈希保证：期望状态不变时不重启服务。
+
+以 `apps/vectorman/` 为参考实现：
+
+```text
+apps/vectorman/
+├── .env                    # 产物 URL + sha256、安装根目录
+├── app.conf                # DEPLOY_MODE=native、HEALTH_URLS、SECRET_ENV
+├── conf/                   # 期望运行时配置（仓库即事实源）
+│   ├── config.toml         # dataserver
+│   ├── gse-server.toml
+│   ├── gse-agent.toml
+│   └── console.toml
+└── native/
+    └── deploy-native.sh    # 下载校验 → 安装 → 迁移 → 重启 → 健康探测
+```
 
 ## 本地校验
 
