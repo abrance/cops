@@ -43,16 +43,31 @@ jobs:
           set -euo pipefail
           requested="${{ github.event.inputs.app }}"
           if [ -n "${requested}" ]; then
+            # 手动指定应用
             candidates="${requested}"
-          elif [ "${{ github.event_name }}" = "push" ]; then
+          elif [ "${{ github.event_name }}" != "push" ]; then
+            # 定时任务或未指定应用的手动触发：部署全部
+            candidates="$(ls apps)"
+          else
             base="${{ github.event.before }}"
             head="${{ github.sha }}"
-            if [ -z "${base}" ] || [ "${base}" = "0000000000000000000000000000000000000000" ]; then
-              base="HEAD~1"
+            if [ -z "${base}" ] \
+              || [ "${base}" = "0000000000000000000000000000000000000000" ] \
+              || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              # 首次推送或基线不可用：无法计算增量，保守地部署全部
+              candidates="$(ls apps)"
+            else
+              changed="$(git diff --name-only "${base}" "${head}")"
+              if grep -Eq '^(scripts/|\.github/workflows/deploy\.yml$)' <<<"${changed}"; then
+                # 部署逻辑自身变更：全量部署以应用新逻辑
+                candidates="$(ls apps)"
+              elif grep -Eq '^apps/' <<<"${changed}"; then
+                candidates="$(grep -E '^apps/' <<<"${changed}" | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+              else
+                # 变更不涉及任何应用：无需部署
+                candidates=""
+              fi
             fi
-            candidates="$(git diff --name-only "${base}" "${head}" -- apps | cut -d/ -f2 | sort -u | tr '\n' ' ')"
-          else
-            candidates="$(ls apps)"
           fi
 
           apps="[]"
