@@ -8,6 +8,13 @@ on:
       - "apps/**"
       - "scripts/**"
       - ".github/workflows/deploy.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "apps/**"
+      - "scripts/**"
+      - ".github/workflows/deploy.yml"
   schedule:
     # 每天 03:17 UTC 重建全部期望状态，纠正人工改动造成的漂移
     - cron: "17 3 * * *"
@@ -42,15 +49,22 @@ jobs:
         run: |
           set -euo pipefail
           requested="${{ github.event.inputs.app }}"
+          event="${{ github.event_name }}"
           if [ -n "${requested}" ]; then
             # 手动指定应用
             candidates="${requested}"
-          elif [ "${{ github.event_name }}" != "push" ]; then
+          elif [ "${event}" = "schedule" ] || [ "${event}" = "workflow_dispatch" ]; then
             # 定时任务或未指定应用的手动触发：部署全部
             candidates="$(ls apps)"
           else
-            base="${{ github.event.before }}"
-            head="${{ github.sha }}"
+            # push 与 pull_request：按变更文件计算受影响应用
+            if [ "${event}" = "pull_request" ]; then
+              base="${{ github.event.pull_request.base.sha }}"
+              head="${{ github.event.pull_request.head.sha }}"
+            else
+              base="${{ github.event.before }}"
+              head="${{ github.sha }}"
+            fi
             if [ -z "${base}" ] \
               || [ "${base}" = "0000000000000000000000000000000000000000" ] \
               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
@@ -112,7 +126,8 @@ jobs:
     needs:
       - resolve
       - validate
-    if: needs.resolve.outputs.apps != '[]'
+    # PR 只校验不部署；部署仅发生在合入 main、定时任务或手动触发时
+    if: needs.resolve.outputs.apps != '[]' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: production
     strategy:

@@ -1,0 +1,43 @@
+# ptdoc 期望状态：Markdown 文档站（Vite preview + 七牛图床）
+#
+# 由 cops 部署流程在云主机 /opt/cops/apps/ptdoc 下执行。
+# 镜像为公开 GHCR 包，可匿名拉取（不再使用 SWR 代理地址）。
+#
+# 数据不随仓库迁移：SQLite 库与静态产物仍保留在 /opt/ptdoc 下，
+# 因此这里使用绝对路径挂载，GitOps 只管理编排与配置。
+name: ptdoc
+
+services:
+  ptdoc:
+    image: ${PTDOC_IMAGE}:${PTDOC_IMAGE_TAG}
+    container_name: ptdoc
+    restart: unless-stopped
+    pull_policy: always
+    platform: linux/amd64
+    environment:
+      # 运行期密钥来自服务器本地 /opt/cops/secrets/ptdoc.env，不入库
+      PTDOC_DATA_KEY: ${PTDOC_DATA_KEY:-}
+      PTDOC_SESSION_TTL_DAYS: ${PTDOC_SESSION_TTL_DAYS:-7}
+      # 容器内监听端口，同时被下方命令与健康检查读取
+      PREVIEW_PORT: ${PREVIEW_PORT:-4173}
+    ports:
+      - "${PTDOC_PORT:-4173}:${PREVIEW_PORT:-4173}"
+    volumes:
+      # SQLite 数据库（data/ptdoc.db，勿删）与静态站点产物目录
+      - /opt/ptdoc/data:/app/data
+      - /opt/ptdoc/dist-site:/app/dist-site
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.PREVIEW_PORT||4173)).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

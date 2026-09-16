@@ -7,6 +7,10 @@
 # 约定的服务器目录：
 #   /opt/cops/apps/<app>/       期望状态（由 CI 同步，含 compose.yaml 与 .env）
 #   /opt/cops/secrets/<app>.env 可选运行期密钥（服务器本地维护，不入库）
+#
+# app.conf 可声明：
+#   HEALTH_CONTAINER / HEALTH_TIMEOUT / HEALTH_URL  健康检查
+#   REQUIRED_ENV                                    部署前必须非空的变量名（空格分隔）
 set -euo pipefail
 
 APP="${1:?用法: deploy.sh <app>}"
@@ -34,6 +38,27 @@ if [ -f "${SECRETS_FILE}" ]; then
   log "加载运行期密钥 ${SECRETS_FILE}"
   COMPOSE_ARGS+=(--env-file "${SECRETS_FILE}")
 fi
+
+# 从 .env 与 secrets 文件按顺序取值（后者优先），用于必需变量检查
+env_lookup() {
+  key="$1"
+  val=""
+  for f in .env "${SECRETS_FILE}"; do
+    [ -f "${f}" ] || continue
+    line="$(sed -n "s/^${key}=//p" "${f}" | tail -1)"
+    if [ -n "${line}" ]; then
+      val="${line}"
+    fi
+  done
+  printf '%s' "${val}"
+}
+
+for key in ${REQUIRED_ENV:-}; do
+  if [ -z "$(env_lookup "${key}")" ]; then
+    log "缺少必需变量 ${key}，请写入 ${SECRETS_FILE}"
+    exit 1
+  fi
+done
 
 log "拉取镜像"
 docker compose "${COMPOSE_ARGS[@]}" pull
