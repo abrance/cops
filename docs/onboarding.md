@@ -4,7 +4,7 @@
 
 ## 前置条件
 
-- [ ] 服务镜像已发布到公开 GHCR，如 `ghcr.io/abrance/<服务>:vX.Y.Z`，云主机可匿名拉取。
+- [ ] 服务镜像已发布到仓库约定镜像源，如 `ghcr.chenby.cn/abrance/<服务>:vX.Y.Z`。
 - [ ] 你确认了容器的监听端口、健康检查路径、需要持久化的目录。
 - [ ] 你确认了哪些配置是敏感的（需要密钥下发）。
 
@@ -15,8 +15,8 @@
 `apps/<服务>/.env`（非敏感变量，随仓库提交）：
 
 ```bash
-# 镜像：公开 GHCR 包，云主机可匿名拉取
-MYAPP_IMAGE=ghcr.io/abrance/<服务>
+# 镜像：统一使用 ghcr.chenby.cn，tag 使用具体版本
+MYAPP_IMAGE=ghcr.chenby.cn/abrance/<服务>
 MYAPP_IMAGE_TAG=v1.0.0
 
 # 端口与运行环境
@@ -160,7 +160,7 @@ git push -u origin 260916-feat-add-myapp
 ## 提交前检查清单
 
 - [ ] 目录名合法（小写字母数字连字符）且与 compose `name:`、容器名一致。
-- [ ] 镜像为公开 GHCR 且 tag 为 `vX.Y.Z`。
+- [ ] 镜像使用 `ghcr.chenby.cn/abrance/<服务>` 且 tag 为 `vX.Y.Z`。
 - [ ] 声明了 `pull_policy: always`、`platform: linux/amd64`、`logging` 上限。
 - [ ] 健康检查用 GET 探测真实路径。
 - [ ] 数据卷用命名卷或绝对路径。
