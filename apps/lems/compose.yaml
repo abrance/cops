@@ -4,7 +4,7 @@
 #   docker compose --env-file .env pull
 #   docker compose --env-file .env up -d
 #
-# 镜像均为公开 GHCR 包，可匿名拉取，无需 registry 凭据。
+# 镜像统一从 ghcr.chenby.cn 拉取；registry 凭据不写入仓库。
 name: lems
 
 services:

@@ -60,17 +60,18 @@ volumes:
 
 **反例（真实教训）**：原 ptdoc 编排用相对路径 `../../data`。当编排文件从 `/opt/ptdoc/deploy/docker-compose` 迁到 `/opt/cops/apps/ptdoc` 后，相对路径会解析到另一个位置，数据库直接「消失」。迁目录时务必改成绝对路径。
 
-## 5. 镜像公开、tag 具体、可复现
+## 5. 镜像源统一、tag 具体、可复现
 
 **做法**
 
-- 镜像发布到公开 GHCR（`ghcr.io/abrance/<服务>`），云主机可匿名拉取。
-- 使用不可变 tag（`vX.Y.Z`），不要用 `latest`。
+- Compose 镜像统一使用 `ghcr.chenby.cn/abrance/<服务>`；完整约定与当前清单见 [knowledge.md](knowledge.md)。
+- 镜像名写在 `apps/<服务>/.env` 的 `*_IMAGE` 变量中，变更与 Compose 配置一起走 PR。
+- 使用具体版本 tag（`vX.Y.Z`），不要用 `latest`。
 - 编排里声明 `pull_policy: always` 与 `platform: linux/amd64`（云主机为 x86_64）。
 
-**原因**：`pull_policy: always` 保证同 tag 重新部署会真正拉取；不可变 tag 让回滚与审计有据可依。
+**原因**：统一镜像源避免部署环境与接入模板不一致；`pull_policy: always` 保证同 tag 重新部署会真正拉取；具体版本 tag 让回滚与审计有据可依。
 
-**反例（真实教训）**：曾依赖 `swr.cn-north-4.myhuaweicloud.com/ddn-k8s/...` 这类镜像加速地址中转，它对新 tag 常常返回 not found，把简单拉取变成手工搬运。已确认云主机可匿名直连 GHCR，不要再引入中转地址。
+**反例（真实教训）**：曾依赖 `swr.cn-north-4.myhuaweicloud.com/ddn-k8s/...` 这类未登记的镜像加速地址中转，它对新 tag 常常返回 not found，把简单拉取变成手工搬运。不要随意引入未登记的镜像源或代理地址。
 
 ## 6. 健康检查必须探测真实业务接口
 
@@ -162,5 +163,5 @@ logging:
 - 不要在编排里使用相对路径挂载数据。
 - 不要把 `latest` 作为镜像 tag。
 - 不要用 HEAD 请求做健康检查。
-- 不要引入镜像中转/加速地址。
+- 不要引入未登记的镜像源或代理地址。
 - 不要直推 `main`：走分支 + PR。

@@ -69,13 +69,13 @@ ssh-keyscan -t ed25519,rsa <云主机地址>
 
 报 `manifest unknown` 或 `denied`。检查：
 
-- 镜像是否真的发布到了 `ghcr.io/abrance/<服务>`，tag 是否存在于远程。
-- 包是否公开可匿名拉取（私有包需要凭据，本流程未配置 registry 凭据）。
+- 镜像是否已发布到 `ghcr.chenby.cn/abrance/<服务>`，tag 是否存在于远程。
+- 镜像源是否可被目标主机访问；当前仓库不保存 registry 凭据。
 
 在云主机上直接验证：
 
 ```bash
-docker pull ghcr.io/abrance/<服务>:vX.Y.Z
+docker pull ghcr.chenby.cn/abrance/<服务>:vX.Y.Z
 ```
 
 ## 容器 unhealthy

@@ -1,7 +1,7 @@
 # ptdoc 期望状态：Markdown 文档站（Vite preview + 七牛图床）
 #
 # 由 cops 部署流程在云主机 /opt/cops/apps/ptdoc 下执行。
-# 镜像为公开 GHCR 包，可匿名拉取（不再使用 SWR 代理地址）。
+# 镜像统一从 ghcr.chenby.cn 拉取；registry 凭据不写入仓库。
 #
 # 数据不随仓库迁移：SQLite 库与静态产物仍保留在 /opt/ptdoc 下，
 # 因此这里使用绝对路径挂载，GitOps 只管理编排与配置。

@@ -13,7 +13,7 @@
 ```
 
 - 触发方式：PR 只做编排校验不部署；合入 `main` 后只部署受影响应用；`workflow_dispatch` 可手动指定或全量；每天定时全量重建以纠正漂移。
-- 镜像来源：应用镜像由各自源码仓库构建后推送到公开 GHCR 包，服务器可匿名拉取，本仓库不需要任何 registry 凭据。
+- 镜像来源：应用镜像由各自源码仓库构建并发布，Compose 部署统一从 `ghcr.chenby.cn` 拉取；本仓库不保存 registry 凭据。
 - 密钥分层：SSH 主机 / 账号 / 密码放 GitHub Secrets；应用运行期密钥放云主机 `/opt/cops/secrets/<app>.env`（权限 600，不入库）。
 - 部署模式：默认 `compose`（容器编排）；`app.conf` 声明 `DEPLOY_MODE=native` 的应用走发布包 + systemd 部署，见下文「native 部署模式」。
 
@@ -21,8 +21,8 @@
 
 | 应用 | 容器 | 镜像 | 说明 |
 | --- | --- | --- | --- |
-| `lems` | `lems`、`emsdevice` | `ghcr.io/abrance/ems`、`ghcr.io/abrance/emsdevice` | EMS 主服务与 ess_demo Modbus 从站 |
-| `ptdoc` | `ptdoc` | `ghcr.io/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
+| `lems` | `lems`、`emsdevice` | `ghcr.chenby.cn/abrance/ems`、`ghcr.chenby.cn/abrance/emsdevice` | EMS 主服务与 ess_demo Modbus 从站 |
+| `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | 无（systemd） | GitHub Releases 静态二进制包 | GSE 采集链路的 6 个组件，native 部署，数据保留在 `/opt/vectorman` |
 
 ## 目录结构
@@ -147,4 +147,5 @@ git diff --name-only HEAD~1 HEAD -- apps | cut -d/ -f2 | sort -u
 | --- | --- |
 | [`docs/onboarding.md`](docs/onboarding.md) | 新增服务接入的完整步骤与模板 |
 | [`docs/best-practices.md`](docs/best-practices.md) | 最佳实践与已踩过的坑 |
+| [`docs/knowledge.md`](docs/knowledge.md) | 仓库知识：容器镜像源、配置位置与校验方式 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 部署失败、容器异常、数据问题的处理 |

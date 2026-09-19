@@ -8,6 +8,7 @@
 | --- | --- |
 | 第一次把服务接入 | [onboarding.md](onboarding.md) |
 | 已接入，想知道怎么写才不出问题 | [best-practices.md](best-practices.md) |
+| 想查镜像源和配置约定 | [knowledge.md](knowledge.md) |
 | 部署失败或容器异常 | [troubleshooting.md](troubleshooting.md) |
 | 想先理解整体怎么运转 | 本文「一图看懂」 |
 
@@ -19,7 +20,7 @@
 1. 构建镜像                                                    
    推 vX.Y.Z                     
         │                        
-        └──► ghcr.io/abrance/<服务>:vX.Y.Z  (公开包，云主机可匿名拉取)
+        └──► ghcr.chenby.cn/abrance/<服务>:vX.Y.Z  (仓库约定镜像源)
                                       ▲
                                       │ 引用镜像 tag
                                       │
@@ -60,7 +61,7 @@
 
 | 你负责 | CI / 平台负责 |
 | --- | --- |
-| 镜像的构建与发布（公开 GHCR） | 拉取镜像、重建容器 |
+| 镜像的构建与发布、镜像源登记 | 拉取镜像、重建容器 |
 | `apps/<服务>/` 下的期望状态 | 同步文件到云主机 |
 | 声明健康检查、必需变量、密钥名 | 下发密钥、等待健康、失败回滚判定 |
 | 数据目录与持久化设计 | 编排校验、变更识别、定时纠偏 |
