@@ -3,8 +3,8 @@
 先定位失败发生在哪一步，再对症处理。流水线各步骤对应如下。
 
 ```text
-解析待部署应用 → 校验 <服务> → 校验部署凭据 → 配置 SSH 主机密钥
-→ 同步应用文件 → 下发运行期密钥 → 执行部署
+解析待部署单元 → 校验 <scope>/<名字> → 校验部署凭据 → 配置 SSH 主机密钥
+→ 同步期望状态文件 → 下发运行期密钥 → 执行部署
                                         ├─ 拉取镜像
                                         ├─ 应用期望状态
                                         ├─ 等待容器健康
@@ -16,11 +16,21 @@
 | 现象 | 先看 |
 | --- | --- |
 | 某个 job 红 | Actions 里展开该 job 的失败步骤 |
-| 「部署 <服务>」红 | 该 job 的「执行部署」步骤输出，会打印容器日志尾部 |
+| 「部署 <scope>/<名字>」红 | 该 job 的「执行部署」步骤输出，会打印容器日志尾部 |
 | 服务不可访问但部署绿 | 云主机上 `docker compose ... ps` 与 `docker logs` |
-| 只想重新部署一次 | Actions → Deploy → Run workflow，`app` 填服务名 |
+| 只想重新部署一次 | Actions → Deploy → Run workflow，`app` 填 `<名字>` 或 `<scope>/<名字>` |
+| 不确定会部署哪些单元 | job「解析待部署单元」的输出，`待部署单元: [{"scope":..,"name":..}]` |
 
 ## 部署失败
+
+### 找不到部署单元 / 名字冲突
+
+```text
+找不到部署单元 nope：apps/ 与 environment/ 下都没有这个目录
+名字在 apps/ 与 environment/ 之间冲突: ptdoc
+```
+
+第一种：手动触发时填的名字写错了，或者同名目录不存在。第二种：同一个名字同时出现在 `apps/` 和 `environment/` 下（密钥文件与容器名都只看名字，所以必须全局唯一），删掉或重命名其中一个。
 
 ### 缺少 GitHub Actions secret
 
@@ -53,6 +63,7 @@ SSH 部署凭据缺失。到 `Settings → Secrets and variables → Actions` �
 
 ```bash
 docker compose --project-directory apps/<服务> -f apps/<服务>/compose.yaml config
+docker compose --project-directory environment/<组件> -f environment/<组件>/compose.yaml config
 ```
 
 常见原因：YAML 缩进错误、变量名拼写不一致、`volumes:` 顶层未声明命名卷。
@@ -78,12 +89,14 @@ ssh-keyscan -t ed25519,rsa <云主机地址>
 docker pull ghcr.chenby.cn/abrance/<服务>:vX.Y.Z
 ```
 
+若 pull 长时间停在 `Pulling fs layer`、没有任何 `Pull complete`，而 `docker manifest inspect <镜像>` 秒回，则不是 registry 的问题，而是 blob 回源 `pkg-containers.githubusercontent.com` 不通/极慢（云主机直连 `ghcr.io` 就是这种表现）。处理：改用 `ghcr.chenby.cn` 路径拉取，不要反复重试直连。
+
 ## 容器 unhealthy
 
 ### 查看状态与日志
 
 ```bash
-docker compose -f /opt/cops/apps/<服务>/compose.yaml ps
+docker compose -f /opt/cops/<scope>/<名字>/compose.yaml ps
 docker inspect -f '{{json .State.Health}}' <容器> | head -c 500
 docker logs --tail 100 <容器>
 ```
@@ -121,11 +134,11 @@ ls -la /opt/<服务>/data
 
 **强制重新部署**（不修改仓库）：
 
-Actions → Deploy → Run workflow → `app` 填服务名。因为 `pull_policy: always`，同 tag 也会重新拉取镜像。
+Actions → Deploy → Run workflow → `app` 填 `<名字>`（在 `apps/` 与 `environment/` 中查找）或 `<scope>/<名字>`。因为 `pull_policy: always`，同 tag 也会重新拉取镜像。
 
 **回滚**：
 
-1. 把 `apps/<服务>/.env` 的镜像 tag 改回上一个 `vX.Y.Z`。
+1. 把单元 `.env` 的镜像 tag 改回上一个版本（应用 `apps/<服务>/.env`，环境组件 `environment/<组件>/.env`），例如把 `v1.0.10` 改回 `v1.0.9`。
 2. 开 PR 合入 `main`。
 
 紧急情况下可先在云主机临时处理，但必须随后回补到仓库，否则下次部署或定时纠偏会覆盖。
@@ -134,7 +147,15 @@ Actions → Deploy → Run workflow → `app` 填服务名。因为 `pull_policy
 
 **为什么我改了 docs 但什么也没跑？**
 
-流水线只在 `apps/**`、`scripts/**`、workflow 自身变更时触发。仅文档变更不会有 run。
+流水线只在 `apps/**`、`environment/**`、`scripts/**`、workflow 自身变更时触发。仅文档变更不会有 run。
+
+**为什么环境组件没看到「下发运行期密钥」？**
+
+该单元没在 `app.conf` 声明 `SECRET_ENV`，job 会打印「未声明 SECRET_ENV，跳过分发」，属正常。
+
+**环境组件和应用会按顺序部署吗？**
+
+不保证。一次运行里 `apps/` 与 `environment/` 平级展开、按解析顺序串行执行（`max-parallel: 1`）。依赖关系靠各自的健康检查与重试兜住；主机重建后建议先 `workflow_dispatch` 触发环境组件，再触发应用。
 
 **为什么 PR 里没有部署？**
 
@@ -146,7 +167,7 @@ Actions → Deploy → Run workflow → `app` 填服务名。因为 `pull_policy
 
 **为什么我手工改的服务器文件消失了？**
 
-`/opt/cops/apps/<服务>` 每次部署由 CI 全量覆盖。所有变更请回仓库。
+`/opt/cops/apps/<名字>`、`/opt/cops/environment/<名字>` 每次部署由 CI 全量覆盖。所有变更请回仓库。
 
 **为什么容器没重建？**
 

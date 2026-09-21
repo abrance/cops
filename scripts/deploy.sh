@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
-# cops 部署脚本：在云主机上执行，应用单个应用的期望状态。
+# cops 部署脚本：在云主机上执行，应用单个部署单元的期望状态。
 #
 # 由 .github/workflows/deploy.yml 通过 stdin 传入：
-#   ssh <host> "bash -s -- <app>" < scripts/deploy.sh
+#   ssh <host> "bash -s -- <scope> <name>" < scripts/deploy.sh
+#   scope: apps（应用）或 environment（应用依赖的环境组件，如中间件）
 #
 # 约定的服务器目录：
-#   /opt/cops/apps/<app>/       期望状态（由 CI 同步，含 compose.yaml 与 .env）
-#   /opt/cops/secrets/<app>.env 可选运行期密钥（服务器本地维护，不入库）
+#   /opt/cops/apps/<name>/         应用期望状态（由 CI 同步）
+#   /opt/cops/environment/<name>/  环境组件期望状态（由 CI 同步）
+#   /opt/cops/secrets/<name>.env   可选运行期密钥（服务器本地维护，不入库）
 #
 # app.conf 可声明：
 #   HEALTH_CONTAINER / HEALTH_TIMEOUT / HEALTH_URL  健康检查
 #   REQUIRED_ENV                                    部署前必须非空的变量名（空格分隔）
 set -euo pipefail
 
-APP="${1:?用法: deploy.sh <app>}"
+APP="${1:?用法: deploy.sh <name> [apps|environment]}"
+SCOPE="${2:-apps}"
+case "${SCOPE}" in
+  apps | environment) ;;
+  *)
+    echo "未知部署范围 ${SCOPE}：只支持 apps 或 environment" >&2
+    exit 1
+    ;;
+esac
 BASE_PATH="${COPS_BASE_PATH:-/opt/cops}"
-APP_DIR="${BASE_PATH}/apps/${APP}"
+APP_DIR="${BASE_PATH}/${SCOPE}/${APP}"
 SECRETS_FILE="${BASE_PATH}/secrets/${APP}.env"
 
 log() { printf '==> [%s] %s\n' "${APP}" "$*"; }
