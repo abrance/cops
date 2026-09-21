@@ -18,7 +18,7 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 | --- | --- | --- | --- |
 | `lems` | `lems` | `LEMS_IMAGE` + `LEMS_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ems:v1.0.8` |
 | `lems` | `emsdevice` | `EMSDEVICE_IMAGE` + `EMSDEVICE_IMAGE_TAG` | `ghcr.chenby.cn/abrance/emsdevice:v1.0.5` |
-| `ptdoc` | `ptdoc` | `PTDOC_IMAGE` + `PTDOC_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc:v1.0.9` |
+| `ptdoc` | `ptdoc` | `PTDOC_IMAGE` + `PTDOC_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc:v1.0.10` |
 
 配置来源：
 
