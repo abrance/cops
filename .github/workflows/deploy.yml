@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "apps/**"
+      - "environment/**"
       - "scripts/**"
       - ".github/workflows/deploy.yml"
   pull_request:
@@ -13,6 +14,7 @@ on:
       - main
     paths:
       - "apps/**"
+      - "environment/**"
       - "scripts/**"
       - ".github/workflows/deploy.yml"
   schedule:
@@ -21,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       app:
-        description: "只部署指定应用（apps/ 下的目录名）；留空表示全部"
+        description: "只部署指定单元：<名字>（在 apps/ 与 environment/ 中查找）或 <scope>/<名字>；留空表示全部"
         required: false
         default: ""
 
@@ -34,30 +36,59 @@ concurrency:
 
 jobs:
   resolve:
-    name: 解析待部署应用
+    name: 解析待部署单元
     runs-on: ubuntu-latest
     outputs:
-      apps: ${{ steps.detect.outputs.apps }}
+      items: ${{ steps.detect.outputs.items }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: 计算应用列表
+      - name: 计算部署单元列表
         id: detect
         run: |
           set -euo pipefail
+
+          # 部署单元有两种范围：
+          #   apps/<名字>         应用
+          #   environment/<名字>  应用依赖的环境组件（中间件等）
+          list_all() {
+            for scope in apps environment; do
+              [ -d "${scope}" ] || continue
+              for name in $(ls "${scope}"); do
+                [ -d "${scope}/${name}" ] && echo "${scope}/${name}"
+              done
+            done
+          }
+
           requested="${{ github.event.inputs.app }}"
           event="${{ github.event_name }}"
           if [ -n "${requested}" ]; then
-            # 手动指定应用
-            candidates="${requested}"
+            # 手动指定：支持 <scope>/<名字>，也支持只写名字（在两个范围里查找）
+            case "${requested}" in
+              */*)
+                candidates="${requested}"
+                ;;
+              *)
+                candidates=""
+                for scope in apps environment; do
+                  if [ -d "${scope}/${requested}" ]; then
+                    candidates="${candidates} ${scope}/${requested}"
+                  fi
+                done
+                if [ -z "${candidates}" ]; then
+                  echo "找不到部署单元 ${requested}：apps/ 与 environment/ 下都没有这个目录" >&2
+                  exit 1
+                fi
+                ;;
+            esac
           elif [ "${event}" = "schedule" ] || [ "${event}" = "workflow_dispatch" ]; then
-            # 定时任务或未指定应用的手动触发：部署全部
-            candidates="$(ls apps)"
+            # 定时任务或未指定单元的手动触发：部署全部
+            candidates="$(list_all)"
           else
-            # push 与 pull_request：按变更文件计算受影响应用
+            # push 与 pull_request：按变更文件计算受影响单元
             if [ "${event}" = "pull_request" ]; then
               base="${{ github.event.pull_request.base.sha }}"
               head="${{ github.event.pull_request.head.sha }}"
@@ -69,65 +100,81 @@ jobs:
               || [ "${base}" = "0000000000000000000000000000000000000000" ] \
               || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
               # 首次推送或基线不可用：无法计算增量，保守地部署全部
-              candidates="$(ls apps)"
+              candidates="$(list_all)"
             else
               changed="$(git diff --name-only "${base}" "${head}")"
               if grep -Eq '^(scripts/|\.github/workflows/deploy\.yml$)' <<<"${changed}"; then
                 # 部署逻辑自身变更：全量部署以应用新逻辑
-                candidates="$(ls apps)"
-              elif grep -Eq '^apps/' <<<"${changed}"; then
-                candidates="$(grep -E '^apps/' <<<"${changed}" | cut -d/ -f2 | sort -u | tr '\n' ' ')"
+                candidates="$(list_all)"
+              elif grep -Eq '^(apps|environment)/' <<<"${changed}"; then
+                candidates="$(grep -E '^(apps|environment)/' <<<"${changed}" | awk -F/ '{print $1"/"$2}' | sort -u)"
               else
-                # 变更不涉及任何应用：无需部署
+                # 变更不涉及任何部署单元：无需部署
                 candidates=""
               fi
             fi
           fi
 
-          apps="[]"
-          for app in ${candidates}; do
-            if ! printf '%s' "${app}" | grep -Eq '^[a-z0-9][a-z0-9-]*$'; then
-              echo "忽略非法应用名: ${app}" >&2
+          items="[]"
+          seen=""
+          for candidate in ${candidates}; do
+            scope="${candidate%%/*}"
+            name="${candidate#*/}"
+            case "${scope}" in
+              apps | environment) ;;
+              *)
+                echo "忽略未知范围: ${candidate}" >&2
+                continue
+                ;;
+            esac
+            if ! printf '%s' "${name}" | grep -Eq '^[a-z0-9][a-z0-9-]*$'; then
+              echo "忽略非法名字: ${candidate}" >&2
               continue
             fi
+            # 名字在两个范围之间必须唯一：密钥文件与容器名都按名字定位
+            if printf ' %s ' "${seen}" | grep -q " ${name} "; then
+              echo "名字在 apps/ 与 environment/ 之间冲突: ${name}" >&2
+              exit 1
+            fi
+            seen="${seen} ${name}"
             mode="compose"
-            if [ -f "apps/${app}/app.conf" ]; then
-              mode="$(sed -n 's/^DEPLOY_MODE=//p' "apps/${app}/app.conf" | tail -1)"
+            if [ -f "${candidate}/app.conf" ]; then
+              mode="$(sed -n 's/^DEPLOY_MODE=//p' "${candidate}/app.conf" | tail -1)"
               mode="${mode:-compose}"
             fi
             case "${mode}" in
               compose)
-                if [ ! -f "apps/${app}/compose.yaml" ]; then
-                  echo "忽略缺少 compose.yaml 的 compose 应用: ${app}" >&2
+                if [ ! -f "${candidate}/compose.yaml" ]; then
+                  echo "忽略缺少 compose.yaml 的 compose 单元: ${candidate}" >&2
                   continue
                 fi
                 ;;
               native)
-                if [ ! -f "apps/${app}/native/deploy-native.sh" ]; then
-                  echo "忽略缺少 native/deploy-native.sh 的 native 应用: ${app}" >&2
+                if [ ! -f "${candidate}/native/deploy-native.sh" ]; then
+                  echo "忽略缺少 native/deploy-native.sh 的 native 单元: ${candidate}" >&2
                   continue
                 fi
                 ;;
               *)
-                echo "忽略未知 DEPLOY_MODE=${mode} 的应用: ${app}" >&2
+                echo "忽略未知 DEPLOY_MODE=${mode} 的单元: ${candidate}" >&2
                 continue
                 ;;
             esac
-            apps="$(jq -c --arg a "${app}" '. + [$a]' <<<"${apps}")"
+            items="$(jq -c --arg s "${scope}" --arg n "${name}" '. + [{scope:$s,name:$n}]' <<<"${items}")"
           done
 
-          echo "待部署应用: ${apps}"
-          echo "apps=${apps}" >> "${GITHUB_OUTPUT}"
+          echo "待部署单元: ${items}"
+          echo "items=${items}" >> "${GITHUB_OUTPUT}"
 
   validate:
-    name: 校验 ${{ matrix.app }}
+    name: 校验 ${{ matrix.item.scope }}/${{ matrix.item.name }}
     needs: resolve
-    if: needs.resolve.outputs.apps != '[]'
+    if: needs.resolve.outputs.items != '[]'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        app: ${{ fromJSON(needs.resolve.outputs.apps) }}
+        item: ${{ fromJSON(needs.resolve.outputs.items) }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
@@ -135,40 +182,40 @@ jobs:
       - name: 校验编排文件
         run: |
           set -euo pipefail
-          app="apps/${{ matrix.app }}"
+          dir="${{ matrix.item.scope }}/${{ matrix.item.name }}"
           mode="compose"
-          if [ -f "${app}/app.conf" ]; then
-            mode="$(sed -n 's/^DEPLOY_MODE=//p' "${app}/app.conf" | tail -1)"
+          if [ -f "${dir}/app.conf" ]; then
+            mode="$(sed -n 's/^DEPLOY_MODE=//p' "${dir}/app.conf" | tail -1)"
             mode="${mode:-compose}"
           fi
           if [ "${mode}" = "native" ]; then
-            # native 应用非容器交付：校验部署脚本语法与期望状态文件齐备
-            test -f "${app}/.env"
-            test -f "${app}/app.conf"
-            test -d "${app}/conf"
-            bash -n "${app}/native/deploy-native.sh"
-            echo "native 应用 ${app} 校验通过"
+            # native 单元非容器交付：校验部署脚本语法与期望状态文件齐备
+            test -f "${dir}/.env"
+            test -f "${dir}/app.conf"
+            test -d "${dir}/conf"
+            bash -n "${dir}/native/deploy-native.sh"
+            echo "native 单元 ${dir} 校验通过"
           else
             docker compose \
-              --project-directory "${app}" \
-              -f "${app}/compose.yaml" \
+              --project-directory "${dir}" \
+              -f "${dir}/compose.yaml" \
               config --quiet
           fi
 
   deploy:
-    name: 部署 ${{ matrix.app }}
+    name: 部署 ${{ matrix.item.scope }}/${{ matrix.item.name }}
     needs:
       - resolve
       - validate
     # PR 只校验不部署；部署仅发生在合入 main、定时任务或手动触发时
-    if: needs.resolve.outputs.apps != '[]' && github.event_name != 'pull_request'
+    if: needs.resolve.outputs.items != '[]' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     environment: production
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        app: ${{ fromJSON(needs.resolve.outputs.apps) }}
+        item: ${{ fromJSON(needs.resolve.outputs.items) }}
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
@@ -211,29 +258,31 @@ jobs:
           fi
           chmod 600 ~/.ssh/known_hosts
 
-      - name: 同步应用文件到云主机
+      - name: 同步期望状态文件到云主机
         run: |
           set -euo pipefail
-          remote_dir="/opt/cops/apps/${{ matrix.app }}"
+          unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
+          remote_dir="/opt/cops/${unit}"
           sshpass -e ssh -p "${DEPLOY_PORT}" \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "mkdir -p '${remote_dir}' /opt/cops/secrets"
-          tar cz -C "apps/${{ matrix.app }}" . \
+          tar cz -C "${unit}" . \
             | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
                 "${DEPLOY_USER}@${DEPLOY_HOST}" "tar xz -C '${remote_dir}'"
 
       - name: 下发运行期密钥
         env:
-          # GitHub Actions 不支持按变量名动态读取 secret，新增应用的运行期密钥时
-          # 在此追加一行，并在对应 apps/<app>/app.conf 的 SECRET_ENV 中声明变量名
+          # GitHub Actions 不支持按变量名动态读取 secret，新增部署单元的运行期密钥时
+          # 在此追加一行，并在对应 app.conf 的 SECRET_ENV 中声明变量名
           PTDOC_DATA_KEY: ${{ secrets.PTDOC_DATA_KEY }}
           # vectorman 为 native 部署：sudo 密码与 SSH 密码相同，复用 DEPLOY_PASSWORD
           VECTORMAN_SUDO_PASS: ${{ secrets.DEPLOY_PASSWORD }}
         run: |
           set -euo pipefail
-          app="${{ matrix.app }}"
-          conf="apps/${app}/app.conf"
+          unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
+          name="${{ matrix.item.name }}"
+          conf="${unit}/app.conf"
 
           secret_keys=""
           if [ -f "${conf}" ]; then
@@ -243,7 +292,7 @@ jobs:
           fi
 
           if [ -z "${secret_keys}" ]; then
-            echo "应用 ${app} 未声明 SECRET_ENV，跳过分发"
+            echo "部署单元 ${unit} 未声明 SECRET_ENV，跳过分发"
             exit 0
           fi
 
@@ -265,19 +314,18 @@ jobs:
           fi
 
           # 通过 stdin 传输，密钥不出现在命令行、不落盘到 runner
-          remote_file="/opt/cops/secrets/${app}.env"
+          remote_file="/opt/cops/secrets/${name}.env"
           printf '%s' "${payload}" \
             | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
                 "${DEPLOY_USER}@${DEPLOY_HOST}" \
                 "umask 077; mkdir -p /opt/cops/secrets; cat > '${remote_file}'; chmod 600 '${remote_file}'"
 
-          echo "已下发 ${app} 运行期密钥（$(printf '%s' "${secret_keys}" | wc -w) 个变量）"
+          echo "已下发 ${unit} 运行期密钥（$(printf '%s' "${secret_keys}" | wc -w) 个变量）"
 
-      - name: 暂存 native 应用产物
+      - name: 暂存 native 单元产物
         run: |
           set -euo pipefail
-          app="${{ matrix.app }}"
-          dir="apps/${app}"
+          dir="${{ matrix.item.scope }}/${{ matrix.item.name }}"
 
           mode="compose"
           if [ -f "${dir}/app.conf" ]; then
@@ -285,14 +333,14 @@ jobs:
             mode="${mode:-compose}"
           fi
           if [ "${mode}" != "native" ] || [ ! -f "${dir}/.env" ]; then
-            echo "应用 ${app} 非 native，跳过产物暂存"
+            echo "单元 ${dir} 非 native，跳过产物暂存"
             exit 0
           fi
 
           # shellcheck disable=SC1090
           set -a; . "${dir}/.env"; set +a
           if [ -z "${NATIVE_ARTIFACT_URL:-}" ]; then
-            echo "应用 ${app} 未声明 NATIVE_ARTIFACT_URL，跳过产物暂存"
+            echo "单元 ${dir} 未声明 NATIVE_ARTIFACT_URL，跳过产物暂存"
             exit 0
           fi
 
@@ -303,15 +351,15 @@ jobs:
           curl -fSL --retry 3 --connect-timeout 20 -o "${tmp}" "${NATIVE_ARTIFACT_URL}"
           printf '%s  %s\n' "${NATIVE_ARTIFACT_SHA256}" "${tmp}" | sha256sum -c -
 
-          remote_file="/opt/cops/cache/${app}/${name}"
+          remote_file="/opt/cops/cache/${{ matrix.item.name }}/${name}"
           sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
-            "umask 077; mkdir -p '/opt/cops/cache/${app}'; cat > '${remote_file}'" < "${tmp}"
+            "umask 077; mkdir -p '/opt/cops/cache/${{ matrix.item.name }}'; cat > '${remote_file}'" < "${tmp}"
           echo "已暂存产物 ${name} 到云主机 ${remote_file}"
 
       - name: 执行部署
         run: |
           set -euo pipefail
           sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- '${{ matrix.app }}'" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- '${{ matrix.item.scope }}' '${{ matrix.item.name }}'" \
             < scripts/deploy.sh

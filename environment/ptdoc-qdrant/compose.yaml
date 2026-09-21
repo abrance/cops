@@ -1,0 +1,48 @@
+# ptdoc 知识库组件（Qdrant + 本地向量化网关）期望状态
+#
+# 由 cops 部署流程在云主机 /opt/cops/environment/ptdoc-qdrant 下执行：
+#   docker compose --env-file .env pull
+#   docker compose --env-file .env up -d --remove-orphans
+#
+# 这是「应用所依赖的环境组件」：apps/ptdoc 依赖本组件，本组件不依赖任何 apps/ 项目。
+#   - 网络用本项目默认网络（ptdoc-qdrant_default），不引用 apps 侧网络
+#   - ptdoc 通过公网入口 https://qdrantgw.xiaoyxq.top 访问网关；
+#     该 TLS 入口由云主机的 dockpanel/traefik 提供，不在本仓库管理
+#   - 向量数据保留在宿主机 /opt/ptdoc-qdrant/qdrant-storage（绝对路径，勿改）
+name: ptdoc-qdrant
+
+services:
+  qdrant:
+    image: ${QDRANT_IMAGE}:${QDRANT_IMAGE_TAG}
+    container_name: ptdoc-qdrant
+    restart: unless-stopped
+    pull_policy: always
+    platform: linux/amd64
+    volumes:
+      # 必须使用宿主机绝对路径：编排目录迁移时相对路径会解析到别处，等于「数据消失」
+      - /opt/ptdoc-qdrant/qdrant-storage:/qdrant/storage
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  gateway:
+    image: ${GATEWAY_IMAGE}:${GATEWAY_IMAGE_TAG}
+    container_name: ptdoc-qdrant-gateway
+    restart: unless-stopped
+    pull_policy: always
+    platform: linux/amd64
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      BIND_ADDR: 0.0.0.0:6335
+    depends_on:
+      - qdrant
+    ports:
+      # 只监听宿主机回环地址，公网入口由 dockpanel/traefik 反向代理
+      - "127.0.0.1:${GATEWAY_PORT}:6335"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

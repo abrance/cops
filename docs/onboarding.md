@@ -157,10 +157,32 @@ git push -u origin 260916-feat-add-myapp
 - [ ] 数据目录内容仍在（若有历史数据）。
 - [ ] 再做一次 `workflow_dispatch` 触发，确认幂等（容器不重建）。
 
+## 环境组件（应用依赖的中间件）
+
+要接入的是**应用依赖的组件**（数据库、向量库、消息队列、网关等）时，步骤与上面完全一致，只把目录从 `apps/<名字>/` 换成 `environment/<名字>/`：
+
+```bash
+git checkout -b 260921-feat-add-qdrant
+git add environment/<组件>
+git commit -m "feat(<组件>): 纳管 <组件>"
+git push -u origin 260921-feat-add-qdrant
+```
+
+额外约束：
+
+- [ ] 名字不与 `apps/` 下任何应用重名（重名会让 CI 在解析阶段直接失败）。
+- [ ] 不引用 apps 项目的网络或卷（不要写 `external: true`）。
+- [ ] 数据用宿主机绝对路径，且该路径与编排目录解耦。
+- [ ] 容器只监听回环端口；域名/TLS 入口交给云主机的 dockpanel/traefik，不进仓库。
+- [ ] 上游镜像 tag 不带 `v` 前缀时按实际形状写（如 `1.0.6`），并在 `.env` 注释里写明。
+
+部署命令只差一个参数：环境组件是 `scripts/deploy.sh <名字> environment`（应用是 `<名字> apps`，不传则默认 `apps`）。参考实现：`environment/ptdoc-qdrant/`。
+
 ## 提交前检查清单
 
 - [ ] 目录名合法（小写字母数字连字符）且与 compose `name:`、容器名一致。
-- [ ] 镜像使用 `ghcr.chenby.cn/abrance/<服务>` 且 tag 为 `vX.Y.Z`。
+- [ ] 放对位置：应用在 `apps/`，应用依赖的环境组件在 `environment/`，且两边不重名。
+- [ ] 镜像使用 `ghcr.chenby.cn/abrance/<服务>` 且 tag 为具体版本（上游不带 `v` 时按实际形状）。
 - [ ] 声明了 `pull_policy: always`、`platform: linux/amd64`、`logging` 上限。
 - [ ] 健康检查用 GET 探测真实路径。
 - [ ] 数据卷用命名卷或绝对路径。
