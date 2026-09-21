@@ -91,6 +91,12 @@ docker pull ghcr.chenby.cn/abrance/<服务>:vX.Y.Z
 
 若 pull 长时间停在 `Pulling fs layer`、没有任何 `Pull complete`，而 `docker manifest inspect <镜像>` 秒回，则不是 registry 的问题，而是 blob 回源 `pkg-containers.githubusercontent.com` 不通/极慢（云主机直连 `ghcr.io` 就是这种表现）。处理：改用 `ghcr.chenby.cn` 路径拉取，不要反复重试直连。
 
+### 健康探测失败 `curl: (56) Recv failure: Connection reset by peer`
+
+容器状态已经是 `running`，但端口还没开始监听——典型是没有 `compose healthcheck` 的服务（如 `ptdoc-qdrant` 的网关要加载本地模型）启动后要几秒才就绪。`deploy.sh` 会在 `HEALTH_TIMEOUT` 秒内每 3 秒重试一次，超时后才失败，并打印尝试次数与最后一次错误。
+
+还失败就按顺序查：`docker logs --tail 50 <容器>` → 在云主机上 `curl -v <HEALTH_URL>` → 确认 `app.conf` 的 `HEALTH_URL` 端口与 `compose.yaml` 的映射一致。若服务永远起不来，考虑给它加 `compose healthcheck`（镜像里没有 `curl`/`wget` 时，用容器自带的探测能力或补一个探测子命令）。
+
 ## 容器 unhealthy
 
 ### 查看状态与日志

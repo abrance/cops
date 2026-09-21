@@ -121,11 +121,24 @@ fi
 
 if [ -n "${HEALTH_URL:-}" ]; then
   log "探测健康接口 ${HEALTH_URL}"
-  if ! curl -fsS --max-time 10 "${HEALTH_URL}" >/dev/null; then
-    log "健康探测失败: ${HEALTH_URL}"
-    exit 1
-  fi
-  log "健康探测通过"
+  # 容器“运行中”不等于服务已就绪：没有 healthcheck 的容器（如网关要加载本地模型）
+  # 起来后需要几秒才监听端口，所以探测要在 HEALTH_TIMEOUT 内重试。
+  deadline=$(( $(date +%s) + ${HEALTH_TIMEOUT:-180} ))
+  attempt=0
+  last_error=""
+  while :; do
+    attempt=$(( attempt + 1 ))
+    # stderr 捕获 curl 的错误信息，stdout（响应体）丢弃
+    if last_error="$(curl -fsS --max-time 10 "${HEALTH_URL}" 2>&1 >/dev/null)"; then
+      log "健康探测通过（第 ${attempt} 次尝试）"
+      break
+    fi
+    if [ "$(date +%s)" -ge "${deadline}" ]; then
+      log "健康探测失败: ${HEALTH_URL}（已尝试 ${attempt} 次，最后一次错误：${last_error:-无输出，可能返回非 2xx}）"
+      exit 1
+    fi
+    sleep 3
+  done
 fi
 
 log "当前容器状态"
