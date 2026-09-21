@@ -20,7 +20,7 @@ SCOPE="${2:-apps}"
 case "${SCOPE}" in
   apps | environment) ;;
   *)
-    echo "未知部署范围 ${SCOPE}：只支持 apps 或 environment" >&2
+    echo "未知部署范围 ${SCOPE}：用法 deploy.sh <名字> <apps|environment>（只支持这两种）" >&2
     exit 1
     ;;
 esac
@@ -37,6 +37,11 @@ if [ -f "${APP_DIR}/app.conf" ]; then
 fi
 
 MODE="${DEPLOY_MODE:-compose}"
+
+if [ ! -d "${APP_DIR}" ]; then
+  echo "找不到部署目录 ${APP_DIR}：确认 <名字> 与 <scope> 写对（环境组件必须传 environment）" >&2
+  exit 1
+fi
 
 cd "${APP_DIR}"
 

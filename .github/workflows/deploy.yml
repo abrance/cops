@@ -361,5 +361,5 @@ jobs:
         run: |
           set -euo pipefail
           sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
-            "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- '${{ matrix.item.scope }}' '${{ matrix.item.name }}'" \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- '${{ matrix.item.name }}' '${{ matrix.item.scope }}'" \
             < scripts/deploy.sh
