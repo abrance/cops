@@ -18,6 +18,9 @@ services:
       - emsdevice
     environment:
       APP_PROFILE: ${APP_PROFILE}
+      # 临时放开鉴权（见 .env 说明）：admin=读写全开，user=只读，留空=正常鉴权
+      # 注意：compose 的 environment 是显式白名单，不写在这里容器就看不到该变量
+      AUTH_BYPASS_ROLE: ${AUTH_BYPASS_ROLE:-}
       # 七牛云对象存储（现货日报图片）：明文变量来自 .env，密钥来自
       # /opt/cops/secrets/lems.env（deploy.sh 额外以 --env-file 加载）
       QINIU_ACCESS_KEY: ${QINIU_ACCESS_KEY:-}
