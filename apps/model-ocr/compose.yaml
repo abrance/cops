@@ -26,7 +26,8 @@ services:
       MAX_SIDE: ${MODEL_OCR_MAX_SIDE}
       # 限制推理线程数，避免与同机其它服务争抢 CPU
       OMP_NUM_THREADS: ${MODEL_OCR_OMP_NUM_THREADS}
-      RUST_LOG: ocr_service=info
+      # 访问日志需要 tower_http=debug，级别写到 .env 便于随时调整
+      RUST_LOG: ${MODEL_OCR_RUST_LOG}
     ports:
       # 只绑回环：对外访问交给同机反向代理，避免无鉴权接口被公网直接调用
       - "127.0.0.1:${MODEL_OCR_PORT}:8080"
