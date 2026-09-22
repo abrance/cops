@@ -143,4 +143,33 @@ fi
 
 log "当前容器状态"
 docker compose "${COMPOSE_ARGS[@]}" ps
+
+# ── 磁盘回收 ─────────────────────────────────────────────────────────────────
+#
+# 每次部署都回收，避免镜像层与构建缓存长期累积把磁盘写满。
+#
+# 默认只做安全回收：悬空镜像（无 tag 的旧层）与过期的构建缓存。
+# 已经打过 tag 的旧版本镜像不会被删，因为回滚要依赖它们。
+#
+# 若磁盘确实吃紧，可设 PRUNE_UNUSED_IMAGES=1 打开激进回收：
+# 删除超过 IMAGE_RETENTION_HOURS 未被任何容器引用的镜像（含带 tag 的旧版本）。
+# 代价是回滚时需要重新从镜像站拉取；在共享主机上还会波及本仓库之外的镜像，
+# 因此默认关闭。
+IMAGE_RETENTION_HOURS="${IMAGE_RETENTION_HOURS:-720}"
+log "回收悬空镜像与过期构建缓存"
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f --filter "until=${IMAGE_RETENTION_HOURS}h" >/dev/null 2>&1 || true
+
+if [ "${PRUNE_UNUSED_IMAGES:-0}" = "1" ]; then
+  log "激进回收：删除 ${IMAGE_RETENTION_HOURS} 小时内未被引用的镜像"
+  docker image prune -a -f --filter "until=${IMAGE_RETENTION_HOURS}h" >/dev/null 2>&1 || true
+fi
+
+DISK_USED_PCT="$(df -P / | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
+DISK_AVAIL="$(df -h / | awk 'NR==2 {print $4}')"
+log "磁盘剩余 ${DISK_AVAIL}（已用 ${DISK_USED_PCT}%）"
+if [ -n "${DISK_USED_PCT}" ] && [ "${DISK_USED_PCT}" -ge 85 ]; then
+  log "警告：根分区已用 ${DISK_USED_PCT}%，建议设 PRUNE_UNUSED_IMAGES=1 重新部署，或手工清理无用的镜像与日志"
+fi
+
 log "完成"
