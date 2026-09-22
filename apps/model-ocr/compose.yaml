@@ -31,6 +31,11 @@ services:
     ports:
       # 只绑回环：对外访问交给同机反向代理，避免无鉴权接口被公网直接调用
       - "127.0.0.1:${MODEL_OCR_PORT}:8080"
+    networks:
+      - default
+      # 跨单元互访：cops-shared 由 deploy.sh 按 app.conf 的 SHARED_NETWORKS 创建，
+      # lems 等同网络容器可用 http://model-ocr:8080 直连，无需走宿主机回环或公网
+      - shared
     deploy:
       resources:
         limits:
@@ -52,3 +57,10 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
+
+networks:
+  # 声明为 external：网络由 deploy.sh 统一创建，两个单元复用同一张网络。
+  # 不用 compose 自己创建，是因为同名的外部网络带不同项目标签时 compose 会拒绝复用。
+  shared:
+    external: true
+    name: cops-shared

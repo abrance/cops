@@ -13,6 +13,7 @@
 # app.conf 可声明：
 #   HEALTH_CONTAINER / HEALTH_TIMEOUT / HEALTH_URL  健康检查
 #   REQUIRED_ENV                                    部署前必须非空的变量名（空格分隔）
+#   SHARED_NETWORKS                                 跨单元共用的 docker 网络名（空格分隔，不存在则创建）
 set -euo pipefail
 
 APP="${1:?用法: deploy.sh <name> [apps|environment]}"
@@ -64,6 +65,18 @@ for key in ${REQUIRED_ENV:-}; do
     log "缺少必需变量 ${key}，请写入 ${SECRETS_FILE}"
     exit 1
   fi
+done
+
+# 共享 docker 网络：app.conf 声明 SHARED_NETWORKS（空格分隔）时，部署前确保存在。
+# 跨单元的容器互访（如 lems 调 model-ocr）用固定名字的网络，同时在两边声明
+# external: true，避免 compose 因项目标签不同而拒绝复用同一网络；
+# 因此网络的创建放在这里，而不是交给某个单元——全量部署不保证单元执行顺序。
+for net in ${SHARED_NETWORKS:-}; do
+  if docker network inspect "${net}" >/dev/null 2>&1; then
+    continue
+  fi
+  log "创建共享网络 ${net}"
+  docker network create "${net}" >/dev/null
 done
 
 # native 模式：非容器交付（发布包 + systemd），交给应用自带的部署脚本
