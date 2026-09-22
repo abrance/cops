@@ -278,6 +278,9 @@ jobs:
           PTDOC_DATA_KEY: ${{ secrets.PTDOC_DATA_KEY }}
           # vectorman 为 native 部署：sudo 密码与 SSH 密码相同，复用 DEPLOY_PASSWORD
           VECTORMAN_SUDO_PASS: ${{ secrets.DEPLOY_PASSWORD }}
+          # lems 七牛云 AK/SK（其余 QINIU_* 为明文，放 apps/lems/.env）
+          QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
+          QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"

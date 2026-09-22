@@ -18,6 +18,13 @@ services:
       - emsdevice
     environment:
       APP_PROFILE: ${APP_PROFILE}
+      # 七牛云对象存储（现货日报图片）：明文变量来自 .env，密钥来自
+      # /opt/cops/secrets/lems.env（deploy.sh 额外以 --env-file 加载）
+      QINIU_ACCESS_KEY: ${QINIU_ACCESS_KEY:-}
+      QINIU_SECRET_KEY: ${QINIU_SECRET_KEY:-}
+      QINIU_BUCKET: ${QINIU_BUCKET:-}
+      QINIU_DOMAIN: ${QINIU_DOMAIN:-}
+      QINIU_ZONE: ${QINIU_ZONE:-z2}
     command:
       - ./ems
       - --web=true
