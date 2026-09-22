@@ -143,4 +143,33 @@ fi
 
 log "当前容器状态"
 docker compose "${COMPOSE_ARGS[@]}" ps
+
+# ── 磁盘回收 ─────────────────────────────────────────────────────────────────
+#
+# 每次部署都回收，避免镜像层与构建缓存长期累积把磁盘写满。
+#
+# 回收分两级：悬空镜像与构建缓存无条件清掉；带 tag 的旧版本镜像按保留窗口回收。
+# 按镜像创建时间过滤，且只删不被任何容器（含已停止容器）引用的镜像，
+# 因此正在提供的版本不会被删。保留窗口默认 120 小时，可用环境变量覆盖：
+#   IMAGE_RETENTION_HOURS=720  拉长保留窗口
+#   PRUNE_UNUSED_IMAGES=0      关闭带 tag 旧版本的回收
+# 代价是回滚旧版本时需要重新从镜像站拉取。若需保留本仓库之外手工构建的镜像，
+# 先把它们跑起来（有容器引用即不会被删）。
+IMAGE_RETENTION_HOURS="${IMAGE_RETENTION_HOURS:-120}"
+log "回收悬空镜像与过期构建缓存"
+docker image prune -f >/dev/null 2>&1 || true
+docker builder prune -f --filter "until=${IMAGE_RETENTION_HOURS}h" >/dev/null 2>&1 || true
+
+if [ "${PRUNE_UNUSED_IMAGES:-1}" = "1" ]; then
+  log "回收 ${IMAGE_RETENTION_HOURS} 小时内未被引用的镜像（含带 tag 的旧版本）"
+  docker image prune -a -f --filter "until=${IMAGE_RETENTION_HOURS}h" >/dev/null 2>&1 || true
+fi
+
+DISK_USED_PCT="$(df -P / | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
+DISK_AVAIL="$(df -h / | awk 'NR==2 {print $4}')"
+log "磁盘剩余 ${DISK_AVAIL}（已用 ${DISK_USED_PCT}%）"
+if [ -n "${DISK_USED_PCT}" ] && [ "${DISK_USED_PCT}" -ge 85 ]; then
+  log "警告：根分区已用 ${DISK_USED_PCT}%，建议把 IMAGE_RETENTION_HOURS 调小后重新部署，或手工清理无用的镜像与日志"
+fi
+
 log "完成"
