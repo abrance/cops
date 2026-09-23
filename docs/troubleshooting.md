@@ -50,6 +50,8 @@ SSH 部署凭据缺失。到 `Settings → Secrets and variables → Actions` �
 
 若报的是你自己的业务密钥（如 `MYAPP_API_KEY`），说明「下发运行期密钥」步骤里没有该变量：检查 `app.conf` 的 `SECRET_ENV` 与 `deploy.yml` 的 `env:` 两处是否都写了。
 
+套路同上：`deploy.yml` 里任何 `$NAME` 形式的校验都需要对应 step（或 job）的 `env:` 映射，secret 不会自动变成环境变量。job 级 `env:` 覆盖所有步骤，`${!name}` 间接取值也只有环境变量里存在的名字才能取到。
+
 ### 缺少必需变量
 
 ```text
