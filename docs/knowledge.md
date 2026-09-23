@@ -26,11 +26,13 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 | `apps/ptdoc` | `ptdoc` | `PTDOC_IMAGE` + `PTDOC_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc:v1.0.10` |
 | `environment/ptdoc-qdrant` | `qdrant` | `QDRANT_IMAGE` + `QDRANT_IMAGE_TAG` | `docker.io/qdrant/qdrant:v1.19.1` |
 | `environment/ptdoc-qdrant` | `gateway` | `GATEWAY_IMAGE` + `GATEWAY_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc-qdrant-gateway:1.0.6` |
+| `apps/model-logcluster` | `model-logcluster` | `MODEL_LOGCLUSTER_IMAGE` + `MODEL_LOGCLUSTER_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-logcluster:<tag>` |
 
 配置来源：
 
 - `apps/lems/.env`、`apps/lems/compose.yaml`
 - `apps/ptdoc/.env`、`apps/ptdoc/compose.yaml`
+- `apps/model-logcluster/.env`、`apps/model-logcluster/compose.yaml`
 - `environment/ptdoc-qdrant/.env`、`environment/ptdoc-qdrant/compose.yaml`
 
 部署脚本执行 `docker compose pull`，因此最终使用的镜像以 Compose 渲染结果为准。

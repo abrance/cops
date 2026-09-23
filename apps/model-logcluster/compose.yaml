@@ -1,0 +1,86 @@
+# model-logcluster 期望状态：Drain3 日志聚类服务
+#
+# 由 cops 部署流程在云主机 /opt/cops/apps/model-logcluster 下执行：
+#   docker compose --env-file .env pull
+#   docker compose --env-file .env up -d
+#
+# 镜像是 Python 交付（FastAPI + Drain3），不是 native 部署，所以不涉及
+# 发布包与 systemd。源码仓库见 apps/model-logcluster/.env 顶部注释。
+#
+# 这是本仓库第一个**有状态**单元：模板树落在命名卷里，删容器、重建、
+# 回滚都不会动它（deploy.sh 只回收镜像，不碰卷）。
+name: model-logcluster
+
+services:
+  model-logcluster:
+    image: ${MODEL_LOGCLUSTER_IMAGE}:${MODEL_LOGCLUSTER_IMAGE_TAG}
+    container_name: model-logcluster
+    restart: unless-stopped
+    pull_policy: always
+    platform: linux/amd64
+    environment:
+      # 服务默认不加鉴权。当前只绑回环地址，因此不需要 token；
+      # 若要对外提供服务，先在 /opt/cops/secrets/model-logcluster.env 写入
+      # AUTH_TOKEN 并在 app.conf 声明 SECRET_ENV。
+      AUTH_TOKEN: ${AUTH_TOKEN:-}
+      # 状态目录固定为卷的挂载点，避免环境变量与卷挂载漂移
+      STATE_DIR: /app/state
+      SIM_TH: ${MODEL_LOGCLUSTER_SIM_TH}
+      DEPTH: ${MODEL_LOGCLUSTER_DEPTH}
+      MAX_CHILDREN: ${MODEL_LOGCLUSTER_MAX_CHILDREN}
+      PARAMETRIZE_NUMERIC: ${MODEL_LOGCLUSTER_PARAMETRIZE_NUMERIC}
+      MASK_RULES: ${MODEL_LOGCLUSTER_MASK_RULES}
+      SNAPSHOT_INTERVAL_MINUTES: ${MODEL_LOGCLUSTER_SNAPSHOT_INTERVAL_MINUTES}
+      MAX_CONCURRENCY: ${MODEL_LOGCLUSTER_MAX_CONCURRENCY}
+      QUEUE_TIMEOUT_SECS: ${MODEL_LOGCLUSTER_QUEUE_TIMEOUT_SECS}
+      LIMIT_CONCURRENCY: ${MODEL_LOGCLUSTER_LIMIT_CONCURRENCY}
+      MAX_LINES: ${MODEL_LOGCLUSTER_MAX_LINES}
+      MAX_LINE_CHARS: ${MODEL_LOGCLUSTER_MAX_LINE_CHARS}
+      MAX_BYTES: ${MODEL_LOGCLUSTER_MAX_BYTES}
+      LOG_LEVEL: ${MODEL_LOGCLUSTER_LOG_LEVEL}
+    ports:
+      # 只绑回环：对外访问交给同机反向代理，避免无鉴权接口被公网直接调用
+      - "127.0.0.1:${MODEL_LOGCLUSTER_PORT}:8080"
+    volumes:
+      # 累积出来的模板树。删容器不丢；要重置见 .env 末尾「状态与回滚」
+      - state:/app/state
+    networks:
+      - default
+      # 跨单元互访：cops-shared 由 deploy.sh 按 app.conf 的 SHARED_NETWORKS 创建，
+      # 同网络容器可用 http://model-logcluster:8080 直连，无需走宿主机回环
+      - shared
+    deploy:
+      resources:
+        limits:
+          cpus: "${MODEL_LOGCLUSTER_CPU_LIMIT}"
+          memory: ${MODEL_LOGCLUSTER_MEM_LIMIT}
+    healthcheck:
+      # 用镜像自带的自探活（镜像内不装 curl/wget），探的是 /readyz：
+      # 状态文件不可用时业务端点全是 503，只探 /healthz 会得到假阳性。
+      test:
+        - CMD
+        - python
+        - -m
+        - src.healthcheck
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # 启动只需加载状态文件，比 OCR 的模型预热快得多
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  # 显式 pin 卷名，方便运维按名字备份与重置；不写 name 时前缀是 compose 项目名
+  state:
+    name: model-logcluster_state
+
+networks:
+  # 声明为 external：网络由 deploy.sh 统一创建，多个单元复用同一张网络。
+  # 不用 compose 自己创建，是因为同名的外部网络带不同项目标签时 compose 会拒绝复用。
+  shared:
+    external: true
+    name: cops-shared
