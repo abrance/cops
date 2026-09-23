@@ -35,17 +35,18 @@
 ### 缺少 GitHub Actions secret
 
 ```text
-缺少 GitHub Actions secret: DEPLOY_HOST DEPLOY_USER SSHPASS
+缺少 GitHub Actions secret: DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY
 ```
 
-SSH 部署凭据缺失。到 `Settings → Secrets and variables → Actions` 配置。这四个是仓库级必备：
+SSH 部署凭据缺失。到 `Settings → Secrets and variables → Actions` 配置。这三个是仓库级必备：
 
 | 名称 | 说明 |
 | --- | --- |
 | `DEPLOY_HOST` | 云主机地址 |
 | `DEPLOY_USER` | SSH 用户 |
-| `DEPLOY_PASSWORD` | SSH 密码 |
+| `DEPLOY_SSH_KEY` | 该用户的 SSH 私钥（不设口令） |
 | `DEPLOY_KNOWN_HOSTS` | 主机公钥（可选，建议固定） |
+| `DEPLOY_PASSWORD` | sudo 密码（可选，仅 vectorman native 部署用） |
 
 若报的是你自己的业务密钥（如 `MYAPP_API_KEY`），说明「下发运行期密钥」步骤里没有该变量：检查 `app.conf` 的 `SECRET_ENV` 与 `deploy.yml` 的 `env:` 两处是否都写了。
 
@@ -74,6 +75,15 @@ docker compose --project-directory environment/<组件> -f environment/<组件>/
 
 ```bash
 ssh-keyscan -t ed25519,rsa <云主机地址>
+```
+
+### SSH 密钥认证失败
+
+报 `Permission denied (publickey)`。`DEPLOY_SSH_KEY` 与云主机 `DEPLOY_USER` 的 `~/.ssh/authorized_keys` 不匹配，或私钥带了口令（CI 无法交互输入）。排查：
+
+```bash
+ssh-keygen -y -f <私钥文件>   # 有口令会提示输入，CI 用不了
+ssh -i <私钥文件> -o IdentitiesOnly=yes <DEPLOY_USER>@<DEPLOY_HOST> true
 ```
 
 ### 拉取镜像失败

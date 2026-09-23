@@ -16,7 +16,7 @@
 - 目录约定：`apps/<名字>/` 是应用；`environment/<名字>/` 是**应用所依赖的环境组件**（中间件等），两者内容布局完全一致（`compose.yaml` + `.env` + `app.conf`），只是同步到云主机的根目录不同（`/opt/cops/apps/<名字>` 与 `/opt/cops/environment/<名字>`）。
 - 触发方式：PR 只做编排校验不部署；合入 `main` 后只部署受影响单元；`workflow_dispatch` 可手动指定或全量；每天定时全量重建以纠正漂移。
 - 镜像来源：应用镜像由各自源码仓库构建并发布，Compose 部署统一从 `ghcr.chenby.cn` 拉取；本仓库不保存 registry 凭据。
-- 密钥分层：SSH 主机 / 账号 / 密码放 GitHub Secrets；运行期密钥放云主机 `/opt/cops/secrets/<名字>.env`（权限 600，不入库）。
+- 密钥分层：SSH 主机 / 账号 / 私钥放 GitHub Secrets；运行期密钥放云主机 `/opt/cops/secrets/<名字>.env`（权限 600，不入库）。
 - 部署模式：默认 `compose`（容器编排）；`app.conf` 声明 `DEPLOY_MODE=native` 的单元走发布包 + systemd 部署，见下文「native 部署模式」。
 
 ## 已纳管应用
@@ -75,7 +75,8 @@
 | --- | --- | --- |
 | `DEPLOY_HOST` | 是 | 云主机地址 |
 | `DEPLOY_USER` | 是 | SSH 用户 |
-| `DEPLOY_PASSWORD` | 是 | SSH 密码 |
+| `DEPLOY_SSH_KEY` | 是 | 部署用户对应的 SSH 私钥（整份 PEM，不设口令） |
+| `DEPLOY_PASSWORD` | 否 | sudo 密码，仅 `DEPLOY_MODE=native` 且需提权的单元（vectorman）用 |
 | `DEPLOY_PORT` | 否 | SSH 端口，默认 `22` |
 | `DEPLOY_KNOWN_HOSTS` | 否 | 服务器 SSH 主机公钥，建议固定（不配置时用 `ssh-keyscan` 临时获取） |
 | `PTDOC_DATA_KEY` | 是 | `ptdoc` 运行期密钥，用于加解密七牛 SecretKey；部署时下发到 `/opt/cops/secrets/ptdoc.env` |
@@ -168,7 +169,7 @@
 
 - 校验阶段不跑 `docker compose config`，改为校验部署脚本语法与期望状态文件齐备。
 - 产物在 `apps/<app>/.env` 中用 `NATIVE_ARTIFACT_URL` + `NATIVE_ARTIFACT_SHA256` 锁定，回滚即改回上一版本。CI 在 runner 侧下载并校验后暂存到云主机 `/opt/cops/cache/<app>/`；云主机直连 GitHub 不稳定，部署脚本优先用暂存文件，缺失时才回退下载。
-- 需要 root 时，由 `native/deploy-native.sh` 用 `sudo -S` 提权；sudo 密码复用 `DEPLOY_PASSWORD`，经 `SECRET_ENV` 下发到 `/opt/cops/secrets/<app>.env`，脚本读取后立即清除。
+- 需要 root 时，由 `native/deploy-native.sh` 用 `sudo -S` 提权；sudo 密码取 `DEPLOY_PASSWORD`，经 `SECRET_ENV` 下发到 `/opt/cops/secrets/<app>.env`，脚本读取后立即清除。
 - 幂等由脚本内的期望状态哈希保证：期望状态不变时不重启服务。
 
 以 `apps/vectorman/` 为参考实现：
