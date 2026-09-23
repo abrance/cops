@@ -219,6 +219,8 @@ jobs:
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      # 校验步骤用 ${!name} 间接取值，所以私钥必须在 job env 里映射，不能只写在单个 step 的 env
+      DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
@@ -240,8 +242,6 @@ jobs:
           echo "DEPLOY_PORT=${port:-22}" >> "${GITHUB_ENV}"
 
       - name: 写入部署私钥
-        env:
-          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
@@ -249,6 +249,9 @@ jobs:
           # 写入 runner 默认私钥路径：只有这一把身份，后续 ssh 无需再传 -i
           printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
+          # 私钥格式错或带口令时在此立即失败，不要拖到 ssh 报 Permission denied
+          ssh-keygen -y -P '' -f ~/.ssh/id_rsa >/dev/null
+          ssh-keygen -l -f ~/.ssh/id_rsa
 
       - name: 配置 SSH 主机密钥
         run: |
