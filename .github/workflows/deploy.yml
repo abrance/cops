@@ -219,7 +219,6 @@ jobs:
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      SSHPASS: ${{ secrets.DEPLOY_PASSWORD }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
@@ -228,7 +227,7 @@ jobs:
         run: |
           set -euo pipefail
           missing=""
-          for name in DEPLOY_HOST DEPLOY_USER SSHPASS; do
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY; do
             if [ -z "${!name:-}" ]; then
               missing="${missing} ${name}"
             fi
@@ -240,10 +239,16 @@ jobs:
           port="${{ secrets.DEPLOY_PORT }}"
           echo "DEPLOY_PORT=${port:-22}" >> "${GITHUB_ENV}"
 
-      - name: 安装 sshpass
+      - name: 写入部署私钥
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq sshpass
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          # 写入 runner 默认私钥路径：只有这一把身份，后续 ssh 无需再传 -i
+          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
 
       - name: 配置 SSH 主机密钥
         run: |
@@ -263,12 +268,12 @@ jobs:
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
           remote_dir="/opt/cops/${unit}"
-          sshpass -e ssh -p "${DEPLOY_PORT}" \
+          ssh -p "${DEPLOY_PORT}" \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=15 \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "mkdir -p '${remote_dir}' /opt/cops/secrets"
           tar cz -C "${unit}" . \
-            | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+            | ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
                 "${DEPLOY_USER}@${DEPLOY_HOST}" "tar xz -C '${remote_dir}'"
 
       - name: 下发运行期密钥
@@ -276,7 +281,7 @@ jobs:
           # GitHub Actions 不支持按变量名动态读取 secret，新增部署单元的运行期密钥时
           # 在此追加一行，并在对应 app.conf 的 SECRET_ENV 中声明变量名
           PTDOC_DATA_KEY: ${{ secrets.PTDOC_DATA_KEY }}
-          # vectorman 为 native 部署：sudo 密码与 SSH 密码相同，复用 DEPLOY_PASSWORD
+          # vectorman 为 native 部署：SSH 走密钥，DEPLOY_PASSWORD 仅作为 sudo 密码复用
           VECTORMAN_SUDO_PASS: ${{ secrets.DEPLOY_PASSWORD }}
           # lems 七牛云 AK/SK（其余 QINIU_* 为明文，放 apps/lems/.env）
           QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
@@ -319,7 +324,7 @@ jobs:
           # 通过 stdin 传输，密钥不出现在命令行、不落盘到 runner
           remote_file="/opt/cops/secrets/${name}.env"
           printf '%s' "${payload}" \
-            | sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+            | ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
                 "${DEPLOY_USER}@${DEPLOY_HOST}" \
                 "umask 077; mkdir -p /opt/cops/secrets; cat > '${remote_file}'; chmod 600 '${remote_file}'"
 
@@ -355,7 +360,7 @@ jobs:
           printf '%s  %s\n' "${NATIVE_ARTIFACT_SHA256}" "${tmp}" | sha256sum -c -
 
           remote_file="/opt/cops/cache/${{ matrix.item.name }}/${name}"
-          sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+          ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" \
             "umask 077; mkdir -p '/opt/cops/cache/${{ matrix.item.name }}'; cat > '${remote_file}'" < "${tmp}"
           echo "已暂存产物 ${name} 到云主机 ${remote_file}"
@@ -363,6 +368,6 @@ jobs:
       - name: 执行部署
         run: |
           set -euo pipefail
-          sshpass -e ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
+          ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- '${{ matrix.item.name }}' '${{ matrix.item.scope }}'" \
             < scripts/deploy.sh
