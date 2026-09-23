@@ -149,6 +149,43 @@ Actions → Deploy → Run workflow → `app` 填 `<名字>`（在 `apps/` 与 `
 
 紧急情况下可先在云主机临时处理，但必须随后回补到仓库，否则下次部署或定时纠偏会覆盖。
 
+### 有状态单元的回滚：`model-logcluster`
+
+`model-logcluster` 的模板树落在命名卷 `model-logcluster_state` 里，**回滚镜像不会回滚状态**。
+如果旧镜像与状态里的 `schema_version` 或聚类参数（`SIM_TH` 等）不一致，服务会降级：
+`/readyz` 返回 503、容器 `unhealthy`、业务端点全部 503，但**不覆盖**旧状态。
+部署会在「等待容器健康」步骤失败并打印日志尾部：
+
+```text
+state unavailable, serving /readyz 503: 状态文件与当前聚类参数不兼容（...）：
+  sim_th: 0.6 -> 0.4。改参数后继续用旧模板会让输出静默变化，因此拒绝启动。
+```
+
+这不是故障而是拦截：宁可让回滚失败，也不要拿旧参数去解释新学到的模板。两条出路：
+
+- 想回到旧版本：把参数（`apps/model-logcluster/.env` 里的 `MODEL_LOGCLUSTER_SIM_TH` 等）
+  也改回与旧镜像一致，让状态重新兼容；
+- 确认旧状态不需要了：备份后清空状态再部署。**清空等于丢掉已累积的模板，簇 ID 会从 1 重新开始**，
+  调用方看到的结果会变。
+
+```bash
+# 备份
+docker run --rm -v model-logcluster_state:/s alpine \
+  tar cz -C /s . > /tmp/logcluster-state-$(date +%F).tgz
+# 清空
+cd /opt/cops/apps/model-logcluster
+docker compose --env-file .env stop
+docker volume rm model-logcluster_state
+docker compose --env-file .env up -d
+```
+
+确认当前状态（schema 版本、参数、模板数）而不是猜：
+
+```bash
+docker run --rm -v model-logcluster_state:/s alpine cat /s/drain_state.json
+docker exec model-logcluster python -c "import json,urllib.request as u;print(u.urlopen('http://127.0.0.1:8080/models').read().decode())"
+```
+
 ## 常见问答
 
 **为什么我改了 docs 但什么也没跑？**
