@@ -230,6 +230,18 @@ docker exec model-logcluster python -c "import json,urllib.request as u;print(u.
 
 ## k8s 单元（cloud3）
 
+### 镜像源守卫失败：`不在允许列表`
+
+```
+主机 cloud3 允许的 registry：ghcr.io
+apps/xxx 里有镜像不在允许列表：XXX_IMAGE=ghcr.chenby.cn/abrance/xxx（registry ghcr.chenby.cn）
+```
+
+registry 是**按主机**不同的：旧主机用 `ghcr.chenby.cn`（该站只对它放行），cloud3 只能用 `ghcr.io`（访问前者会被 Cloudflare 拦成 403）。
+处理：把该单元的 `*_IMAGE` 改成目标主机允许的 registry，并确认镜像在该站可拉取。
+**通常不需要动这一行**——升级版本只改 `*_IMAGE_TAG`；出现这条报错多半是复制了旧模板或把整行覆盖了。
+白名单在 `hosts.yaml` 的 `registries` 字段，本地可用 `scripts/check-registries.sh <单元目录> <主机>` 复现。
+
 ### 渲染失败：`引用了 .env 里没有定义的变量`
 
 `scripts/render-k8s.py` 在 runner 侧执行，未定义的 `${VAR}` 会直接失败并列出变量名与行号。

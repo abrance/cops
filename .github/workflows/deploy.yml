@@ -77,6 +77,11 @@ jobs:
           set -euo pipefail
           dir="${{ matrix.item.scope }}/${{ matrix.item.name }}"
           mode="${{ matrix.item.mode }}"
+
+          # 镜像源守卫：registry 按主机不同（旧主机 ghcr.chenby.cn，cloud3 只能 ghcr.io）。
+          # 谁把 *_IMAGE 的 registry 换回旧值，这里就红，不拖到部署时才发现拉不动镜像。
+          bash scripts/check-registries.sh "${dir}" "${{ matrix.item.target }}"
+
           case "${mode}" in
             native)
               # native 单元非容器交付：校验部署脚本语法与期望状态文件齐备
