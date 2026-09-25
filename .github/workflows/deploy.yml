@@ -140,24 +140,44 @@ jobs:
           set -euo pipefail
           target="${{ matrix.item.target }}"
 
-          # 需要非空的凭据：空值直接失败并点名缺哪个 secret
+          # Secret 的名字登记在 hosts.yaml，值在 job env 里静态映射（GitHub 不支持按名动态读 secret）。
+          # 这一步按 target 查出名字，再用 ${!name} 间接取值。
+          #
+          # 注意：不要依赖 set -e 拦住这里的失败——bash 在嵌套命令替换里对 errexit
+          # 的行为不可靠（实测漏网，随后在 ${!var} 上报 "无效的变量名"）。所有调用点
+          # 都显式 `|| exit 1`。
+          secret_name() {
+            local name
+            name="$(bash scripts/hosts.sh "${target}" secret "$1" 2>/dev/null || true)"
+            if [ -z "${name}" ]; then
+              echo "hosts.yaml 里查不到主机 ${target} 的 ${1}（主机名写错或登记缺字段）" >&2
+              bash scripts/hosts.sh check >&2 || true
+              return 1
+            fi
+            printf '%s' "${name}"
+          }
+
+          # 必填凭据：Secret 名字查不到、或值为空，都失败并点名
           resolve() {
             local key="$1" var
-            var="$(bash scripts/hosts.sh "${target}" secret "${key}")"
+            var="$(secret_name "${key}")" || return 1
             if [ -z "${!var:-}" ]; then
               echo "缺少 GitHub Actions secret: ${var}（主机 ${target} 的 ${key}）" >&2
               echo "按 hosts.yaml 的登记补齐 Secret，再重跑。" >&2
-              exit 1
+              return 1
             fi
             printf '%s' "${!var}"
           }
 
-          host="$(resolve host)"
-          user="$(resolve user)"
-          port="$(resolve port)"
+          host="$(resolve host)" || exit 1
+          user="$(resolve user)" || exit 1
+
+          # 端口可选：与旧行为一致，缺省 22（现有 default 主机就没有这个 secret）
+          port_var="$(secret_name port)" || exit 1
+          port="${!port_var:-22}"
 
           # 私钥只在文件里落地，不写进 GITHUB_ENV：含换行，写进 env 文件会破坏格式
-          key="$(resolve key)"
+          key="$(resolve key)" || exit 1
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "${key}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
@@ -165,8 +185,8 @@ jobs:
           ssh-keygen -y -P '' -f ~/.ssh/id_rsa >/dev/null
           ssh-keygen -l -f ~/.ssh/id_rsa
 
-          # 主机密钥：有 secret 就用固定的，没有才 ssh-keyscan（可选项，与旧行为一致）
-          known_hosts_var="$(bash scripts/hosts.sh "${target}" secret known_hosts)"
+          # 主机密钥可选：有 secret 就用固定的，没有才 ssh-keyscan（与旧行为一致）
+          known_hosts_var="$(secret_name known_hosts)" || exit 1
           known_hosts="${!known_hosts_var:-}"
           if [ -n "${known_hosts}" ]; then
             printf '%s\n' "${known_hosts}" > ~/.ssh/known_hosts

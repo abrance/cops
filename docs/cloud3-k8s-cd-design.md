@@ -75,8 +75,8 @@ hosts:
 | `CLOUD3_DEPLOY_HOST` | 是 | cloud3 的地址 |
 | `CLOUD3_DEPLOY_USER` | 是 | `xiaoy` |
 | `CLOUD3_DEPLOY_SSH_KEY` | 是 | **CI 专用私钥**（新生成，不复用个人密钥） |
-| `CLOUD3_DEPLOY_PORT` | 是 | `35776` |
-| `CLOUD3_DEPLOY_KNOWN_HOSTS` | 推荐 | cloud3 的主机公钥 |
+| `CLOUD3_DEPLOY_PORT` | 否 | `35776`；缺省 22（现有 `default` 主机就没配这个 secret） |
+| `CLOUD3_DEPLOY_KNOWN_HOSTS` | 推荐 | cloud3 的主机公钥；缺省时用 `ssh-keyscan` |
 
 主机侧准备（一次性）：把新生成的公钥追加到 cloud3 的 `~/.ssh/authorized_keys`。`xiaoy` 已是 sudo NOPASSWD，k8s 单元不需要提权，所以不需要 `DEPLOY_PASSWORD` 那类 secret。
 

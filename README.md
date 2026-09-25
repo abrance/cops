@@ -92,8 +92,10 @@
 
 | 主机 | 部署驱动 | 需要的 Secret |
 | --- | --- | --- |
-| `default`（现有云主机） | compose / native | `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`、`DEPLOY_PORT`、`DEPLOY_KNOWN_HOSTS` |
+| `default`（现有云主机） | compose / native | `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`（`DEPLOY_PORT` 未配置=默认 22；`DEPLOY_KNOWN_HOSTS` 未配置时用 `ssh-keyscan`） |
 | `cloud3`（k3s 单机，见 [docs/cloud3.md](docs/cloud3.md)） | k8s | `CLOUD3_DEPLOY_HOST`、`CLOUD3_DEPLOY_USER`、`CLOUD3_DEPLOY_SSH_KEY`、`CLOUD3_DEPLOY_PORT`、`CLOUD3_DEPLOY_KNOWN_HOSTS` |
+
+每台主机的 **host / user / key 必填**；**port 缺省 22**；**known_hosts 缺省时用 `ssh-keyscan` 临时获取**（建议固定下来）。
 
 新增主机：在 `hosts.yaml` 加一段 → 建这 5 个 secret → 在 `deploy.yml` 的 `env:` 段加 5 行映射。`scripts/hosts.sh check` 会校验注册表结构。
 
