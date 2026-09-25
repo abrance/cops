@@ -415,6 +415,15 @@ ssh <旧主机> 'docker volume rm model-logcluster_state'
 **重新评估的触发条件**（出现任意一条再说）：
 
 1. k8s 单元达到 **6 个以上**，且大量同构重复（Deployment + Service + 探针 + IngressRoute 反复抄）→ **先用 Kustomize**（`kubectl` 内置、overlay 范式、零新增依赖），而不是 Helm。
+
+   > 实测提醒（2026-09-25，kubectl v1.33.5 内置的 kustomize）：**不要指望 Kustomize 的结构化校验能拦住写错的 patch**。以下两种写法都是 `exit=0` 静默 no-op，渲染出来的仍是“语法正确”的 YAML，只是改动没生效：
+   >
+   > - patch 打在不存在的字段路径上（如 `/readinessProbe/httpGet/typo`）
+   > - patch 的 target 指向不存在的资源名
+   >
+   > 这与 `envsubst` 把未定义变量渲染成空串是**同一类坑**，两者都需要仓库侧自己加校验（现有 `k8s.yaml` 方案的对应做法是“检查每个 `${VAR}` 在 `.env` 中有定义”；换成 Kustomize 则要改成“渲染后断言关键字段已生效”）。
+
+   另外实测的体量参考：一套 base（Deployment + Service，34 行）+ 两个 overlay（共 49 行）对两个单元而言与“各写一份 `k8s.yaml`”（约 120 行）**基本打平**，从第三个同构单元开始才净赚。
 2. 出现**多环境 / 多主机**需要同一单元不同参数 → Kustomize overlay（`base` + `overlays/<host>`）。
 3. 需要把 chart **分发给别人**，或真的需要 chart 依赖管理 → 才考虑 Helm，且只上 `helm template`（渲染） **不**上 `helm install`（release），避免与 git 单一事实源及 k3s 托管的 release 冲突。
 
