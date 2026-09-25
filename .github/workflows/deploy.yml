@@ -102,7 +102,6 @@ jobs:
               exit 1
               ;;
           esac
-          fi
 
   deploy:
     name: 部署 ${{ matrix.item.scope }}/${{ matrix.item.name }}
