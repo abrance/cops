@@ -21,7 +21,7 @@
 - 不迁 `lems` / `ptdoc` / `vectorman` / `environment/ptdoc-qdrant`。
 - 不改 modelman 源码仓库，不重建镜像。
 - 不做鉴权（model 系列的 `AUTH_TOKEN` 维持不启用口径，与 modelman 设计 D15/D16 一致）。
-- 不引入 Helm / Kustomize / ArgoCD，k8s 侧只用 `kubectl apply`。
+- 不引入 Helm / Kustomize / ArgoCD，k8s 侧只用 `kubectl apply`（为什么不用 Helm，见第 10 节决策记录）
 - 不做 HPA / PDB / NetworkPolicy（单节点，YAGNI）。
 
 ## 3. 现状约束（实测，非假设）
@@ -270,7 +270,7 @@ host 端口不再由单元声明：cloud3 上唯一对外入口是 Traefik 的 8
 | --- | --- |
 | `README.md` | secrets 表加 `CLOUD3_*`；"已纳管应用"表加「目标主机」列；部署流程补 k8s 模式；目录结构加 `hosts.yaml` 与 `k8s.yaml`；说明镜像源按主机不同 |
 | `docs/onboarding.md` | 新增「k8s 单元接入」小节与 `app.conf` 模板 |
-| `docs/knowledge.md` | 记明 cloud3 走 `ghcr.io` 直连、旧主机走 `ghcr.chenby.cn`，以及为什么 |
+| `docs/knowledge.md` | 镜像源按主机区分（已随本设计稿的 PR 完成，见第 6 节） |
 | `docs/cloud3.md` | 补「CD 接入」小节：CI 密钥、`hosts.yaml`、k8s 单元部署流程 |
 | `docs/troubleshooting.md` | 补 k8s 单元的常见失败：rollout 超时、PVC 属主、证书未签发 |
 
@@ -385,3 +385,39 @@ ssh <旧主机> 'docker volume rm model-logcluster_state'
 1. **`PUBLIC_URL` 探活**：`model-logcluster` 的调用方是用户本人（无自动化），建议保留 `PUBLIC_URL` 并在迁移后手工真实调用一次（不只探 `/readyz`）确认业务可用。默认按"保留"实施。
 2. **旧卷保留时长**：默认保留到新环境稳定运行一周后再删（`docker volume rm model-logcluster_state`）。
 3. **`AUTH_TOKEN`**：当前决定不加。modelman 设计 D15/D16 已预留，将来要加时改动点是 `app.conf` 的 `SECRET_ENV` + workflow 的密钥映射 + 单元 `.env`。
+
+## 10. 决策记录
+
+### 10.1 为什么自家单元不用 Helm（已否决，勿重复讨论）
+
+**触发背景**：希望 k3s 里的服务与 k3s 生态工具链保持一致，考虑过用 Helm 统一管理。
+
+**决策**：k8s 单元的期望状态用原生清单（`k8s.yaml` + `envsubst` 渲染），**不用 Helm**，也暂不用 Kustomize。
+
+**理由**：统一性分两层，本仓库两层都已经就位：
+
+| 层 | 谁管 | 用什么 |
+| --- | --- | --- |
+| 消费第三方组件（Traefik、Gateway API CRD、以后的 cert-manager） | k3s 自己（HelmChart 控制器） | 已经就是 Helm，不需要我们写 chart |
+| 管理自家服务的期望状态 | cops 仓库 + CI | git 清单（compose / native / k8s.yaml） |
+
+把第一层的工具拿去干第二层的活，收益接近零，代价是真实的：
+
+1. **多一套事实源**：Helm release 状态在集群 Secret 里，而本仓库的回滚口径是“改 `.env` 里的 tag → 合入 main”，git 才是唯一事实源。两套状态并存时，排障先要判断谁赢。
+2. **和 k3s 托管的 release 混在一起**：cloud3 上 `traefik` / `traefik-crd` 由 k3s 的 HelmChart 控制器管理（见 [cloud3.md](cloud3.md)），手工 `helm upgrade` 会抢同一份 release。自家 chart 进入同一 Helm 命名空间后，同样要回答“这个 release 谁拥有的”。
+3. **多一层模板语言**：`k8s.yaml` 打开就是 k8s 对象；chart 要先 `helm template` 才知道最终渲染成什么，PR 审查与排障都多一步。
+4. **与现有 compose 单元不对称**：compose 用 `.env` 做文本插值，不是模板引擎；仓库会变成“compose 靠替换、k8s 靠模板”两种范式并存。
+
+**被否决的替代方案**：
+
+- **HelmChart CR 路线**（把单元做成 chart 放到节点的 `/var/lib/rancher/k3s/server/static/charts/`，再建 `HelmChart` CR 让 k3s 自己 reconcile，自带漂移纠正）。代价：期望状态变成两个控制者（CI 与 k3s 只能留一个）、现有 `HEALTH_URL` 探活与失败诊断要重做、`.env` 改 tag 的路径变长（要重打 chart 包）。**2 个单元规模下不值得。**
+
+**重新评估的触发条件**（出现任意一条再说）：
+
+1. k8s 单元达到 **6 个以上**，且大量同构重复（Deployment + Service + 探针 + IngressRoute 反复抄）→ **先用 Kustomize**（`kubectl` 内置、overlay 范式、零新增依赖），而不是 Helm。
+2. 出现**多环境 / 多主机**需要同一单元不同参数 → Kustomize overlay（`base` + `overlays/<host>`）。
+3. 需要把 chart **分发给别人**，或真的需要 chart 依赖管理 → 才考虑 Helm，且只上 `helm template`（渲染） **不**上 `helm install`（release），避免与 git 单一事实源及 k3s 托管的 release 冲突。
+
+### 10.2 为什么不用 `helm install` 即使将来上了 Helm
+
+因为本仓库的模型是“git 是期望状态的唯一事实源、CI 是执行者”。`helm install/upgrade` 会把期望状态的一部分搬到集群内的 release Secret 里，与 git 及 k3s 的 HelmChart 控制器形成第二个事实源。如果要上 Helm，只用 `helm template` 渲染出 YAML，仍然由 `kubectl apply` 落地，回滚仍然是 `git revert`。

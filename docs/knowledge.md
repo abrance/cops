@@ -26,7 +26,8 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 | `apps/ptdoc` | `ptdoc` | `PTDOC_IMAGE` + `PTDOC_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc:v1.0.11` |
 | `environment/ptdoc-qdrant` | `qdrant` | `QDRANT_IMAGE` + `QDRANT_IMAGE_TAG` | `docker.io/qdrant/qdrant:v1.19.1` |
 | `environment/ptdoc-qdrant` | `gateway` | `GATEWAY_IMAGE` + `GATEWAY_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc-qdrant-gateway:1.0.7` |
-| `apps/model-logcluster` | `model-logcluster` | `MODEL_LOGCLUSTER_IMAGE` + `MODEL_LOGCLUSTER_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-logcluster:<tag>` |
+| `apps/model-ocr` | `model-ocr` | `MODEL_OCR_IMAGE` + `MODEL_OCR_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-ocr:v0.1.3-6476ffb` |
+| `apps/model-logcluster` | `model-logcluster` | `MODEL_LOGCLUSTER_IMAGE` + `MODEL_LOGCLUSTER_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-logcluster:v0.1.1-4c4f4e1` |
 
 配置来源：
 
@@ -45,7 +46,7 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 - 镜像、tag 和 Compose 配置的变更都要提交到仓库并通过分支 + PR 合入 `main`。
 - 不要把 registry 用户名、密码、token 或其他敏感信息写入 `.env`、Compose 文件或文档。当前仓库没有在 GitHub Actions 中保存或注入 registry 登录凭据。
 - 不要随意混用其他 registry 或未登记的代理地址；如果镜像源需要调整，应同时更新实际配置、接入模板、排障说明和本文档。
-- 云主机上 `ghcr.io` 直连回源 GitHub CDN 极慢，会卡在 `Pulling fs layer`；引用 GHCR 镜像时写 `ghcr.chenby.cn` 路径。
+- 云主机上 `ghcr.io` 直连回源 GitHub CDN 极慢，会卡在 `Pulling fs layer`；引用 GHCR 镜像时写 `ghcr.chenby.cn` 路径。**这是针对旧云主机的结论，不适用于 cloud3（k3s）**，见第 6 节。
 
 ## 4. 校验方式
 
@@ -89,3 +90,29 @@ docker compose \
 Compose 的 shell 环境变量优先级高于项目 `.env`，部署脚本还可能加载 `/opt/cops/secrets/<app>.env`。如果服务器侧提供了同名变量，实际部署值可能与仓库文件不同，应以 `docker compose config --images` 的最终结果为准。
 
 本约定只适用于 `compose` 部署的 Docker 镜像。`apps/vectorman/` 使用 `DEPLOY_MODE=native`，部署的是 GitHub Releases 发布包和 systemd 服务，不要把它的 `NATIVE_ARTIFACT_URL` 或 `NATIVE_ARTIFACT_SHA256` 当作容器镜像字段修改。
+
+## 6. 镜像源按主机区分（重要）
+
+`ghcr.chenby.cn` 是**旧云主机专用**的 mirror，不是全网可用的地址。实测（2026-09-25）：
+
+| 主机 | `ghcr.chenby.cn` | `ghcr.io` 直连 | 结论 |
+| --- | --- | --- | --- |
+| 旧云主机（compose 单元） | 正常 | 直连回源慢，会卡在 `Pulling fs layer` | 用 `ghcr.chenby.cn` |
+| cloud3（k3s，见 [cloud3.md](cloud3.md)） | `/v2/` → Cloudflare 403，拿不到 token | 7–8 MB/s，实测可匿名拉取 `abrance/modelman-ocr`、`abrance/modelman-logcluster` | 用 `ghcr.io`，**不要**套用旧主机的 mirror 约定 |
+
+所以：`apps/model-ocr` 与 `apps/model-logcluster` 迁到 cloud3 的 k8s 模式后，它们的 `.env` 里镜像地址改为 `ghcr.io/abrance/...`。两个镜像在 ghcr.io 上是公开包，**不需要** registry 凭据，也**不需要** imagePullSecret。
+
+判断依据：`ghcr.chenby.cn` 从 cloud3 返回的是 Cloudflare 的拦截页（`Attention Required!`，`server: cloudflare`），不是 registry 的错误响应；而同一台机器直接访问 `ghcr.io` 的 token 与 manifest 接口均为 200。迁移前请用同样的方法复测，不要只信文档。
+
+验证方法（在目标主机执行）：
+
+```bash
+# registry 是否可达
+curl -sS -o /dev/null -w '%{http_code}\n' https://ghcr.io/v2/
+# 匿名能否拿到 token 并读到 manifest（把 <org>/<image>:<tag> 换成待验证的镜像）
+tok=$(curl -sS "https://ghcr.io/token?scope=repository:<org>/<image>:pull&service=ghcr.io" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')
+curl -sS -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $tok" \
+  -H 'Accept: application/vnd.oci.image.index.v1+json' \
+  https://ghcr.io/v2/<org>/<image>/manifests/<tag>
+```
