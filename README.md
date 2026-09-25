@@ -212,13 +212,14 @@ k3s 主机上的服务用 `DEPLOY_MODE=k8s` 声明，单元目录放 `k8s.yaml`�
 ```text
 apps/<name>/
 ├── app.conf      # DEPLOY_MODE=k8s / DEPLOY_TARGET=cloud3 / K8S_NAMESPACE / K8S_ROLLOUT / K8S_HEALTH
-├── .env          # 镜像 + tag、端口、资源限制、域名（k8s.yaml 里用 ${VAR} 引用）
+├── .env          # 镜像 + tag、端口、资源限制、域名（k8s.yaml 里用占位符引用）
 └── k8s.yaml      # Deployment + Service (+ PVC) (+ IngressRoute)
 ```
 
 与 compose 模式的差异：
 
-- **变量渲染**：k8s 不认 `${VAR}`，由 `scripts/render-k8s.py` 在 runner 侧按 `.env` 渲染成 `rendered.yaml`，再同步到主机。渲染时**未定义的变量直接失败**（`envsubst` 会静默替换成空串，把端口/镜像 tag 打成空值）。
+- **变量渲染**：k8s 不认 `${VAR}`，由 `scripts/render-k8s.py` 在 runner 侧渲染成 `rendered.yaml`，再同步到主机。变量取自单元的 `.env`（镜像/端口/资源/域名）与 `app.conf`（`K8S_NAMESPACE` 等部署元数据，同名键覆盖 `.env`）。渲染时**未定义的变量直接失败**（`envsubst` 会静默替换成空串，把端口/镜像 tag 打成空值）。
+  - 限制：渲染器不解析 YAML 结构（不引入 YAML 库依赖），因此**注释里也不能出现字面量占位符**——需要在注释里举例时写文字描述。
 - **健康检查**：compose 靠 `HEALTH_CONTAINER` + `HEALTH_URL`；k8s 靠 manifest 里的 `readinessProbe`（由 kubelet 执行），`deploy-k8s.sh` 只做 `rollout status` 与探活，`K8S_HEALTH="Service:端口:路径"` 会从主机直接 curl Service 的 ClusterIP。
 - **入口与证书**：容器不需要绑定宿主机回环端口；对外暴露用 `IngressRoute`，证书由 k3s 自带 Traefik 的 ACME 自动签发。**一条 IngressRoute 必须拆成两条**（`web` 跳转 + `websecure` 带 `tls.certResolver`），否则 80 端口和证书挑战都会 404，原因见 [cloud3.md](cloud3.md) 的坑清单。
 - **镜像源**：k3s 主机用 `ghcr.io` 直连，旧主机用 `ghcr.chenby.cn`。按主机的差异见 [knowledge.md](docs/knowledge.md) 第 6 节。

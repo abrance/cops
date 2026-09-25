@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""k8s 单元的期望状态渲染器：把 k8s.yaml 里的 ${VAR} 用 .env 的值替换。
+"""k8s 单元的期望状态渲染器：把 k8s.yaml 里的 ${VAR} 用单元的变量替换。
 
 用法：
     scripts/render-k8s.py apps/model-ocr > /tmp/rendered.yaml
@@ -12,11 +12,18 @@ kubectl apply）。本地排障时也可以直接跑，`docker compose config` �
      直到 apply 到集群才报错。这里改为显式失败并列出缺失的变量名。
   2. envsubst 依赖 gettext，CI runner 上不保证存在；python3 一定有。
 
+变量来源（按顺序读取，后者覆盖同名键）：
+  <单元>/.env       非敏感期望状态（镜像、tag、端口、资源、域名）
+  <单元>/app.conf   部署元数据（DEPLOY_MODE / DEPLOY_TARGET / K8S_NAMESPACE / K8S_ROLLOUT ...）
+
 校验（全部通过才输出，任何一条不过就非零退出）：
-  - .env 可解析（KEY=VALUE，支持 # 注释与成对引号）
-  - k8s.yaml 里引用的每个 ${VAR} 都在 .env 中有定义
+  - .env 与 app.conf 可解析（KEY=VALUE，支持 # 注释与成对引号）
+  - k8s.yaml 里引用的每个 ${VAR} 都在上面两个文件中有定义
   - 每个 YAML 文档都含 apiVersion 与 kind（拦"文档数/结构写错"这类错误）
   - 渲染结果里不残留 ${...}（例如 ${VAR:-默认值} 这种 bash 语法，本渲染器不支持）
+
+已知限制：**注释里也不能出现字面量 ${...}**。本渲染器不解析 YAML 结构（没有 YAML
+库依赖），因此注释与字符串一视同仁；需要在注释里举例时写成占位符文字即可。
 """
 
 from __future__ import annotations
@@ -52,13 +59,18 @@ def parse_env(env_file: Path) -> dict[str, str]:
 
 def render(unit_dir: Path) -> str:
     env_file = unit_dir / ".env"
+    conf_file = unit_dir / "app.conf"
     manifest = unit_dir / "k8s.yaml"
     if not env_file.is_file():
         raise SystemExit(f"缺少 {env_file}（k8s.yaml 的变量来源）")
     if not manifest.is_file():
         raise SystemExit(f"缺少 {manifest}")
 
+    # 部署元数据（namespace、rollout 对象等）写在 app.conf，期望状态写在 .env：
+    # 两个文件合起来才是渲染的变量集，后者覆盖同名键。
     values = parse_env(env_file)
+    if conf_file.is_file():
+        values.update(parse_env(conf_file))
     source = manifest.read_text(encoding="utf-8")
 
     missing: dict[str, list[int]] = {}
@@ -69,8 +81,8 @@ def render(unit_dir: Path) -> str:
     if missing:
         detail = "、".join(f"${{{n}}}（第 {','.join(map(str, ls))} 行）" for n, ls in sorted(missing.items()))
         raise SystemExit(
-            f"{manifest} 引用了 .env 里没有定义的变量：{detail}\n"
-            f"请在 {env_file} 中补上，或从 k8s.yaml 里删掉该引用。"
+            f"{manifest} 引用了 .env / app.conf 里都没有定义的变量：{detail}\n"
+            f"请在 {env_file} 或 {conf_file} 中补上，或从 k8s.yaml 里删掉该引用。"
         )
 
     rendered = VAR_RE.sub(lambda m: values[m.group(1)], source)

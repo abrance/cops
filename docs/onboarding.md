@@ -220,7 +220,7 @@ git push -u origin 260921-feat-add-qdrant
    SECRET_ENV=""
    ```
 
-2. `apps/<服务>/.env`：镜像 + tag、容器端口、资源限制、域名等，供 `k8s.yaml` 用 `${VAR}` 引用。
+2. `apps/<服务>/.env`：镜像 + tag、容器端口、资源限制、域名（如 `PUBLIC_HOST`）等，供 `k8s.yaml` 用占位符引用；`K8S_NAMESPACE` 这类部署元数据写在 `app.conf` 里，渲染时两个文件都会读（`app.conf` 覆盖同名键）。注意注释里不能出现字面量占位符。
    注意 k8s 主机的镜像源是 `ghcr.io`（旧主机的 `ghcr.chenby.cn` 从 cloud3 访问会被 Cloudflare 拦，见 [knowledge.md](knowledge.md) 第 6 节）。
 
 3. `apps/<服务>/k8s.yaml`：多文档 YAML（`---` 分隔），至少包含
