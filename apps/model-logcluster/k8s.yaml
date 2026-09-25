@@ -1,0 +1,181 @@
+# model-logcluster 期望状态（k8s / k3s）
+#
+# 由 cops 部署流程执行：
+#   CI 侧 scripts/render-k8s.py 把本文件里的占位符按同级 .env 与 app.conf 渲染成 rendered.yaml
+#   → 同步到 cloud3 的 /opt/cops/apps/model-logcluster/
+#   → scripts/deploy-k8s.sh 做 kubectl apply + rollout + 探活
+#
+# 单元约定见仓库根 README 的「k8s 部署模式」；环境细节见 docs/cloud3.md。
+#
+# 两个关键点（与 compose 版的差异）：
+#   1. 不再有「只绑回环」这回事：暴露面由 Service（ClusterIP）与 IngressRoute 决定。
+#   2. 状态落在 PVC 上，不再是 Docker 命名卷。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+# 80 → 443 跳转中间件：命名空间级对象，本单元与 model-ocr 各写一份完全相同的，
+# kubectl apply 幂等，这样不依赖单元部署顺序（全量部署不保证顺序）。
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: ${K8S_NAMESPACE}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-logcluster
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: model-logcluster
+spec:
+  replicas: 1
+  # 单副本 + 单个状态文件：Recreate 保证同一时刻只有一个进程在写 /app/state。
+  # 用默认的 RollingUpdate 会出现新旧两个 Pod 同时持有同一份状态。
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: model-logcluster
+  template:
+    metadata:
+      labels:
+        app: model-logcluster
+    spec:
+      containers:
+        - name: model-logcluster
+          image: ${MODEL_LOGCLUSTER_IMAGE}:${MODEL_LOGCLUSTER_IMAGE_TAG}
+          ports:
+            - containerPort: ${MODEL_LOGCLUSTER_PORT}
+          env:
+            # 状态目录固定为卷的挂载点，避免环境变量与卷挂载漂移
+            - name: STATE_DIR
+              value: /app/state
+            # 鉴权口径：当前不启用（modelman 仓库 docs/design.md D16）。
+            # 要收敛时：.env 里填 AUTH_TOKEN，并在 app.conf 的 SECRET_ENV 声明它
+            # （k8s 侧需要把密钥以 Secret 形式下发，见 README「k8s 部署模式」）
+            - name: AUTH_TOKEN
+              value: "${AUTH_TOKEN}"
+            - name: SIM_TH
+              value: "${MODEL_LOGCLUSTER_SIM_TH}"
+            - name: DEPTH
+              value: "${MODEL_LOGCLUSTER_DEPTH}"
+            - name: MAX_CHILDREN
+              value: "${MODEL_LOGCLUSTER_MAX_CHILDREN}"
+            - name: PARAMETRIZE_NUMERIC
+              value: "${MODEL_LOGCLUSTER_PARAMETRIZE_NUMERIC}"
+            - name: MASK_RULES
+              value: "${MODEL_LOGCLUSTER_MASK_RULES}"
+            - name: SNAPSHOT_INTERVAL_MINUTES
+              value: "${MODEL_LOGCLUSTER_SNAPSHOT_INTERVAL_MINUTES}"
+            - name: MAX_CONCURRENCY
+              value: "${MODEL_LOGCLUSTER_MAX_CONCURRENCY}"
+            - name: QUEUE_TIMEOUT_SECS
+              value: "${MODEL_LOGCLUSTER_QUEUE_TIMEOUT_SECS}"
+            - name: LIMIT_CONCURRENCY
+              value: "${MODEL_LOGCLUSTER_LIMIT_CONCURRENCY}"
+            - name: MAX_LINES
+              value: "${MODEL_LOGCLUSTER_MAX_LINES}"
+            - name: MAX_LINE_CHARS
+              value: "${MODEL_LOGCLUSTER_MAX_LINE_CHARS}"
+            - name: MAX_BYTES
+              value: "${MODEL_LOGCLUSTER_MAX_BYTES}"
+            - name: LOG_LEVEL
+              value: "${MODEL_LOGCLUSTER_LOG_LEVEL}"
+          # 探 /readyz 而不是 /healthz：这个服务**有状态**，状态文件不可用时
+          # /healthz 仍返回 200，只有 /readyz 会 503。用 /healthz 会让部署在
+          # "容器健康但业务端点全 503" 的情况下判定成功。
+          # 不配 livenessProbe：状态不一致时重启 Pod 也修不好，只会掩盖问题。
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ${MODEL_LOGCLUSTER_PORT}
+            # 启动只需加载状态文件，比 OCR 的模型预热快得多
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: "${MODEL_LOGCLUSTER_CPU_LIMIT}"
+              memory: ${MODEL_LOGCLUSTER_MEM_LIMIT}
+          volumeMounts:
+            - name: state
+              mountPath: /app/state
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: model-logcluster-state
+---
+# 累积出来的模板树。删 Pod、重建、回滚镜像都不会动它（与旧命名卷等价）。
+# local-path 的 PV 就是宿主机目录，迁移与备份见 cloud3-k8s-cd-design.md 的 runbook。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-logcluster-state
+  namespace: ${K8S_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-logcluster
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: model-logcluster
+spec:
+  selector:
+    app: model-logcluster
+  ports:
+    - name: http
+      port: ${MODEL_LOGCLUSTER_PORT}
+      targetPort: ${MODEL_LOGCLUSTER_PORT}
+---
+# 公网入口：必须拆成两条 IngressRoute。Traefik v3 里若把 [web, websecure] 与
+# tls.certResolver 写在同一条上，只会生成 websecure 路由器：80 端口 404，
+# 而且 ACME 的 HTTP-01 挑战同样 404（见 docs/cloud3.md 坑清单）。
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: model-logcluster
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: model-logcluster
+          port: ${MODEL_LOGCLUSTER_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: model-logcluster-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      services:
+        - name: model-logcluster
+          port: ${MODEL_LOGCLUSTER_PORT}
+  tls:
+    certResolver: letsencrypt

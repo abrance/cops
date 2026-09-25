@@ -234,7 +234,7 @@ spec:
 | 设计稿写的 | 实际实现 | 原因 |
 | --- | --- | --- |
 | 主机用 `driver` 单值 | `hosts.yaml` 里用 `drivers` 列表 | 旧主机上 `compose` 与 `native` 并存（`vectorman` 就是 native），单值无法表达 |
-| `envsubst` 渲染 | `scripts/render-k8s.py`（python3 标准库） | `envsubst` 对未定义变量静默渲染成空串，会把端口/镜像 tag 打成空值；且依赖 `gettext`，runner 上不保证存在。python3 一定有，顺便把"变量必须有定义""不残留 `${...}`""每个文档含 `apiVersion`/`kind`"变成显式失败 |
+| `envsubst` 渲染（变量只来自 `.env`） | `scripts/render-k8s.py`（python3 标准库），变量来自 `.env` + `app.conf` | `envsubst` 对未定义变量静默渲染成空串，会把端口/镜像 tag 打成空值；且依赖 `gettext`，runner 上不保证存在。python3 一定有，顺便把"变量必须有定义""不残留 `${...}`""每个文档含 `apiVersion`/`kind`"变成显式失败。同时读 `app.conf` 是为了让 `K8S_NAMESPACE` 这类部署元数据只有一个来源，不必在 `.env` 里重复一份。已知限制：不解析 YAML 结构，所以注释里也不能出现字面量占位符 |
 | resolve 逻辑留在 workflow 内联 | 抽到 `scripts/resolve-units.sh`，workflow 只调用 | 可本地复现（脚本头部写了用法），并集中承载 `hosts.yaml` / `DEPLOY_MODE` / `DEPLOY_TARGET` 的一致性校验 |
 | 主机注册表解析方式未定 | `scripts/hosts.sh`（awk 严格解析，`check` 子命令做结构校验） | 部署链路不引入 YAML 解析库依赖；结构走样（缩进、字段名写错）变成显式失败而不是静默取空值 |
 | `K8S_HEALTH` 探活 | 额外校验 ClusterIP 必须是 IPv4 | `kubectl get svc` 输出异常时会拼出垃圾 URL，校验后直接报错并打印诊断 |
