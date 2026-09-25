@@ -1,0 +1,39 @@
+# 部署目标主机注册表
+#
+# 部署单元在 app.conf 里用 DEPLOY_TARGET 引用这里的主机名；不写表示 default。
+# 每个主机的 secrets 段写的是「GitHub Secrets 的名字」，不是值——值只在
+# .github/workflows/deploy.yml 的 env 段里映射（GitHub 不支持按变量名动态读 secret）。
+#
+# 结构约定（scripts/hosts.sh 会严格校验，写错字段名或缩进会直接失败）：
+#   hosts:
+#     <主机名>:            # 两位缩进
+#       drivers: <驱动列表>  # 四位缩进，空格分隔，取值只能是 compose / native / k8s；
+#                            # 单元的 DEPLOY_MODE 必须在这个列表里（旧主机上 compose 与 native 并存）
+#       notes: <说明>      # 可选
+#       secrets:           # 四位缩进，五个键都是必填（六位缩进）
+#         host: <Secrets 名>
+#         user: <Secrets 名>
+#         key: <Secrets 名>
+#         port: <Secrets 名>
+#         known_hosts: <Secrets 名>
+#
+# 新增一台主机 = 加一段 + 建对应的五个 secret + 在 deploy.yml 的 env 段加五行映射。
+hosts:
+  default:
+    drivers: compose native
+    notes: 现有云主机，compose / native 单元的默认目标
+    secrets:
+      host: DEPLOY_HOST
+      user: DEPLOY_USER
+      key: DEPLOY_SSH_KEY
+      port: DEPLOY_PORT
+      known_hosts: DEPLOY_KNOWN_HOSTS
+  cloud3:
+    drivers: k8s
+    notes: k3s 单机，环境与人工改动见 docs/cloud3.md
+    secrets:
+      host: CLOUD3_DEPLOY_HOST
+      user: CLOUD3_DEPLOY_USER
+      key: CLOUD3_DEPLOY_SSH_KEY
+      port: CLOUD3_DEPLOY_PORT
+      known_hosts: CLOUD3_DEPLOY_KNOWN_HOSTS

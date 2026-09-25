@@ -29,6 +29,8 @@
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | 无（systemd） | GitHub Releases 静态二进制包 | GSE 采集链路的 6 个组件，native 部署，数据保留在 `/opt/vectorman` |
 
+单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。上表所有单元当前都在 `default`。
+
 ## 已纳管环境组件
 
 | 组件 | 容器 | 镜像 | 说明 |
@@ -61,8 +63,13 @@
 │       ├── app.conf
 │       ├── compose.yaml
 │       └── .env
+├── hosts.yaml             # 部署目标主机注册表（主机 → 部署驱动 + Secret 名字）
 ├── scripts/
-│   └── deploy.sh          # 在云主机上执行的部署脚本
+│   ├── deploy.sh          # 在云主机上执行的部署脚本（compose / native）
+│   ├── deploy-k8s.sh      # 在 k3s 主机上执行的部署脚本（kubectl apply + rollout + 探活）
+│   ├── hosts.sh           # 查询 hosts.yaml（CI 与本地排障共用）
+│   ├── resolve-units.sh   # 计算本次要部署哪些单元（CI 的 resolve job 调用）
+│   └── render-k8s.py      # 渲染 k8s 单元的 ${VAR}（在 runner 侧执行）
 └── .github/workflows/
     └── deploy.yml         # 解析变更 → 校验 → 部署
 ```
@@ -81,16 +88,27 @@
 | `DEPLOY_KNOWN_HOSTS` | 否 | 服务器 SSH 主机公钥，建议固定（不配置时用 `ssh-keyscan` 临时获取） |
 | `PTDOC_DATA_KEY` | 是 | `ptdoc` 运行期密钥，用于加解密七牛 SecretKey；部署时下发到 `/opt/cops/secrets/ptdoc.env` |
 
+主机凭据按**每台主机一组**配置，名字登记在 `hosts.yaml`，值在 `deploy.yml` 的 `env:` 段映射（GitHub 不支持按变量名动态读 secret）。当前两台：
+
+| 主机 | 部署驱动 | 需要的 Secret |
+| --- | --- | --- |
+| `default`（现有云主机） | compose / native | `DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KEY`（`DEPLOY_PORT` 未配置=默认 22；`DEPLOY_KNOWN_HOSTS` 未配置时用 `ssh-keyscan`） |
+| `cloud3`（k3s 单机，见 [docs/cloud3.md](docs/cloud3.md)） | k8s | `CLOUD3_DEPLOY_HOST`、`CLOUD3_DEPLOY_USER`、`CLOUD3_DEPLOY_SSH_KEY`、`CLOUD3_DEPLOY_PORT`、`CLOUD3_DEPLOY_KNOWN_HOSTS` |
+
+每台主机的 **host / user / key 必填**；**port 缺省 22**；**known_hosts 缺省时用 `ssh-keyscan` 临时获取**（建议固定下来）。
+
+新增主机：在 `hosts.yaml` 加一段 → 建这 5 个 secret → 在 `deploy.yml` 的 `env:` 段加 5 行映射。`scripts/hosts.sh check` 会校验注册表结构。
+
 应用运行期密钥统一放 GitHub Secrets，由 CI 在部署前写入云主机的 `/opt/cops/secrets/<app>.env`（权限 600，不入库）。密钥通过 stdin 传输，不经过命令行，也不会落盘到 runner。
 
 ## 部署流程
 
 1. 修改 `apps/<app>/`（应用）或 `environment/<name>/`（环境组件）下的期望状态并提交到 `main`。
 2. 开 PR 后 Actions 先做编排校验，不触碰云主机；合入 `main` 后进入部署。
-3. Actions 计算受影响单元列表（`<scope>/<名字>`），对每个单元执行：
-   - `docker compose config` 校验编排文件
-   - 通过 SSH 将目录同步到 `/opt/cops/<scope>/<名字>/`
-   - 在服务器上执行 `scripts/deploy.sh <名字> <scope>`：拉取镜像 → `up -d` → 等待容器健康 → 探测健康接口
+3. Actions 计算受影响单元列表（`<scope>/<名字>`，含每个单元的 `mode` 与 `target`），对每个单元执行：
+   - 按模式校验：compose 跑 `docker compose config`；native 校验脚本与期望状态；k8s 跑 `scripts/render-k8s.py` 渲染
+   - 通过 SSH 将目录同步到目标主机的 `/opt/cops/<scope>/<名字>/`（k8s 单元连渲染产物 `rendered.yaml` 一起同步）
+   - 在目标主机上执行：compose/native 走 `scripts/deploy.sh`（拉镜像 → `up -d` → 等健康 → 探活）；k8s 走 `scripts/deploy-k8s.sh`（`kubectl apply` → `rollout status` → 探 Service 的 ClusterIP → 可选探公网入口）
 4. 部署失败时 job 非零退出，容器日志会打印到 Actions 输出。
 
 手动触发：`Actions → Deploy → Run workflow`，`app` 填 `<名字>`（在 `apps/` 与 `environment/` 中查找）或 `<scope>/<名字>`，留空表示全部。
@@ -187,6 +205,40 @@ apps/vectorman/
     └── deploy-native.sh    # 下载校验 → 安装 → 迁移 → 重启 → 健康探测
 ```
 
+## k8s 部署模式
+
+k3s 主机上的服务用 `DEPLOY_MODE=k8s` 声明，单元目录放 `k8s.yaml`（多文档 YAML）而不是 `compose.yaml`：
+
+```text
+apps/<name>/
+├── app.conf      # DEPLOY_MODE=k8s / DEPLOY_TARGET=cloud3 / K8S_NAMESPACE / K8S_ROLLOUT / K8S_HEALTH
+├── .env          # 镜像 + tag、端口、资源限制、域名（k8s.yaml 里用 ${VAR} 引用）
+└── k8s.yaml      # Deployment + Service (+ PVC) (+ IngressRoute)
+```
+
+与 compose 模式的差异：
+
+- **变量渲染**：k8s 不认 `${VAR}`，由 `scripts/render-k8s.py` 在 runner 侧按 `.env` 渲染成 `rendered.yaml`，再同步到主机。渲染时**未定义的变量直接失败**（`envsubst` 会静默替换成空串，把端口/镜像 tag 打成空值）。
+- **健康检查**：compose 靠 `HEALTH_CONTAINER` + `HEALTH_URL`；k8s 靠 manifest 里的 `readinessProbe`（由 kubelet 执行），`deploy-k8s.sh` 只做 `rollout status` 与探活，`K8S_HEALTH="Service:端口:路径"` 会从主机直接 curl Service 的 ClusterIP。
+- **入口与证书**：容器不需要绑定宿主机回环端口；对外暴露用 `IngressRoute`，证书由 k3s 自带 Traefik 的 ACME 自动签发。**一条 IngressRoute 必须拆成两条**（`web` 跳转 + `websecure` 带 `tls.certResolver`），否则 80 端口和证书挑战都会 404，原因见 [cloud3.md](cloud3.md) 的坑清单。
+- **镜像源**：k3s 主机用 `ghcr.io` 直连，旧主机用 `ghcr.chenby.cn`。按主机的差异见 [knowledge.md](docs/knowledge.md) 第 6 节。
+- **单元互访**：k8s 用同一命名空间的 Service 名当主机名，不需要 `SHARED_NETWORKS`。
+- **状态数据**：用 PVC（`local-path`），不再是 Docker 命名卷。
+
+k8s 单元的 `app.conf` 字段：
+
+```bash
+DEPLOY_MODE=k8s
+DEPLOY_TARGET=cloud3
+K8S_NAMESPACE=cops
+K8S_ROLLOUT="deployment/model-ocr"     # 需要等待 rollout 的对象，空格分隔可多个
+K8S_HEALTH="model-ocr:8080:/healthz"   # Service:端口:路径，从主机 curl ClusterIP 探活
+PUBLIC_URL="https://ocr.xiaoyxq.top/healthz"   # 可选：再从公网探一次
+HEALTH_TIMEOUT=180
+```
+
+参考实现见 `apps/model-ocr/` 与 `apps/model-logcluster/`（后者带 PVC）。
+
 ## 本地校验
 
 ```bash
@@ -195,8 +247,17 @@ docker compose --project-directory apps/lems -f apps/lems/compose.yaml config
 docker compose --project-directory environment/ptdoc-qdrant \
   -f environment/ptdoc-qdrant/compose.yaml config
 
-# 查看将要部署的单元（模拟 CI 的变更识别）
-git diff --name-only HEAD~1 HEAD -- apps environment | cut -d/ -f1,2 | sort -u
+# 查看将要部署的单元（与 CI 的 resolve 完全同一份逻辑）
+EVENT_NAME=push BASE_SHA=HEAD~1 HEAD_SHA=HEAD scripts/resolve-units.sh
+
+# 主机注册表结构自检（缺字段/未知字段/非法驱动都会失败）
+scripts/hosts.sh check
+
+# k8s 单元的渲染校验（未定义变量、残留 ${...}、缺 apiVersion/kind 都会失败）
+scripts/render-k8s.py apps/model-ocr > /dev/null
+
+# 主机侧部署脚本语法
+bash -n scripts/deploy.sh scripts/deploy-k8s.sh
 ```
 
 ## 说明

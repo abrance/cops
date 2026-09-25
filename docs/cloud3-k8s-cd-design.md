@@ -42,7 +42,7 @@
 # 部署目标主机注册表。单元在 app.conf 里用 DEPLOY_TARGET 引用这里的键；不写表示 default。
 hosts:
   default:
-    driver: compose
+    drivers: compose native      # 旧主机上 compose 与 native 并存，所以是列表
     notes: 现有云主机，compose / native 单元的默认目标
     secrets:
       host: DEPLOY_HOST
@@ -51,7 +51,7 @@ hosts:
       port: DEPLOY_PORT
       known_hosts: DEPLOY_KNOWN_HOSTS
   cloud3:
-    driver: k8s
+    drivers: k8s
     notes: k3s 单机，环境与人工改动见 docs/cloud3.md
     secrets:
       host: CLOUD3_DEPLOY_HOST
@@ -64,7 +64,8 @@ hosts:
 规则：
 
 - `secrets` 里存的是 **GitHub Secrets 的名字**，不是值（值只在 workflow 的 `env:` 里映射）。
-- 单元的 `DEPLOY_MODE` 必须与该 target 的 `driver` 一致，否则 PR 阶段直接失败。
+- 单元的 `DEPLOY_MODE` 必须出现在该 target 的 `drivers` 列表里，否则 PR 阶段直接失败。
+  （实现时从单一 `driver` 改成列表：旧主机上 `compose` 与 `native` 并存，单值表达不了。）
 - 新增主机 = 加一段 `hosts.yaml` + 建对应 secret + 在 workflow 的 `env:` 加映射，不改其他代码。
 
 ### 4.2 GitHub Secrets
@@ -74,8 +75,8 @@ hosts:
 | `CLOUD3_DEPLOY_HOST` | 是 | cloud3 的地址 |
 | `CLOUD3_DEPLOY_USER` | 是 | `xiaoy` |
 | `CLOUD3_DEPLOY_SSH_KEY` | 是 | **CI 专用私钥**（新生成，不复用个人密钥） |
-| `CLOUD3_DEPLOY_PORT` | 是 | `35776` |
-| `CLOUD3_DEPLOY_KNOWN_HOSTS` | 推荐 | cloud3 的主机公钥 |
+| `CLOUD3_DEPLOY_PORT` | 否 | `35776`；缺省 22（现有 `default` 主机就没配这个 secret） |
+| `CLOUD3_DEPLOY_KNOWN_HOSTS` | 推荐 | cloud3 的主机公钥；缺省时用 `ssh-keyscan` |
 
 主机侧准备（一次性）：把新生成的公钥追加到 cloud3 的 `~/.ssh/authorized_keys`。`xiaoy` 已是 sudo NOPASSWD，k8s 单元不需要提权，所以不需要 `DEPLOY_PASSWORD` 那类 secret。
 
@@ -223,10 +224,20 @@ spec:
 | job | 改动 |
 | --- | --- |
 | `resolve` | 每个单元额外输出 `target`（读 `app.conf` 的 `DEPLOY_TARGET`，缺省 `default`）；校验 `hosts.yaml` 存在该 target、且 `DEPLOY_MODE` 与 `driver` 一致；`DEPLOY_MODE=k8s` 时要求存在 `k8s.yaml` |
-| `validate` | `DEPLOY_MODE=k8s` 分支：① 检查 `k8s.yaml` 里引用的每个 `${VAR}` 都在 `.env` 中有定义（否则 `envsubst` 会静默渲染成空串，把端口/镜像打空）；② `set -a; . .env; set +a; envsubst < k8s.yaml` → Python 解多文档 YAML（拦语法与文档数）；③ 检查 `REQUIRED_ENV` 非空；不做 `docker compose config` |
+| `validate` | `DEPLOY_MODE=k8s` 分支：执行 `scripts/render-k8s.py`（渲染即校验，见下方偏离说明）；不做 `docker compose config` |
 | `deploy` | `env:` 追加 5 行 `CLOUD3_*` 映射（GitHub 不支持按名动态读 secret，与现有 `DEPLOY_SSH_KEY` 同一套路），再用 `${!var}` 间接取值得到该 target 的连接信息；k8s 单元走「渲染 → 同步 → 执行 `deploy-k8s.sh`」 |
 
 `hosts.yaml` 与 workflow 的 `env:` 之间是**同义重复**（GitHub 限制，值必须静态列在 `env:` 里）。用一步校验兜住：workflow 启动时检查 `hosts.yaml` 里声明的每个 secret 名都在 `env:` 中有映射，缺了立刻失败。
+
+### 4.4.1 实现时的偏离（与设计稿的差异，均已落地）
+
+| 设计稿写的 | 实际实现 | 原因 |
+| --- | --- | --- |
+| 主机用 `driver` 单值 | `hosts.yaml` 里用 `drivers` 列表 | 旧主机上 `compose` 与 `native` 并存（`vectorman` 就是 native），单值无法表达 |
+| `envsubst` 渲染 | `scripts/render-k8s.py`（python3 标准库） | `envsubst` 对未定义变量静默渲染成空串，会把端口/镜像 tag 打成空值；且依赖 `gettext`，runner 上不保证存在。python3 一定有，顺便把"变量必须有定义""不残留 `${...}`""每个文档含 `apiVersion`/`kind`"变成显式失败 |
+| resolve 逻辑留在 workflow 内联 | 抽到 `scripts/resolve-units.sh`，workflow 只调用 | 可本地复现（脚本头部写了用法），并集中承载 `hosts.yaml` / `DEPLOY_MODE` / `DEPLOY_TARGET` 的一致性校验 |
+| 主机注册表解析方式未定 | `scripts/hosts.sh`（awk 严格解析，`check` 子命令做结构校验） | 部署链路不引入 YAML 解析库依赖；结构走样（缩进、字段名写错）变成显式失败而不是静默取空值 |
+| `K8S_HEALTH` 探活 | 额外校验 ClusterIP 必须是 IPv4 | `kubectl get svc` 输出异常时会拼出垃圾 URL，校验后直接报错并打印诊断 |
 
 ### 4.5 `scripts/deploy-k8s.sh`（在 cloud3 上执行）
 
@@ -288,7 +299,7 @@ host 端口不再由单元声明：cloud3 上唯一对外入口是 Traefik 的 8
 
 ### 第 1 步：PR1 — 只加 CD 能力
 
-内容：`hosts.yaml`、workflow 改动、`scripts/deploy-k8s.sh`、4.8 节里与 k8s 模式相关的文档。
+内容：`hosts.yaml`、`scripts/hosts.sh`、`scripts/resolve-units.sh`、`scripts/render-k8s.py`、`scripts/deploy-k8s.sh`、workflow 改动、4.8 节里与 k8s 模式相关的文档。
 
 合并后行为：默认主机不变，compose 单元不变，**没有任何现网影响**。此时可以手动触发一次全量部署验证旧主机流程未受影响。
 

@@ -201,3 +201,46 @@ git push -u origin 260921-feat-add-qdrant
 5. 若需要 root，`SECRET_ENV` 声明密码变量，并在 `deploy.yml` 的「下发运行期密钥」步骤 `env:` 映射（vectorman 复用 `DEPLOY_PASSWORD`）。
 
 可直接参考 `apps/vectorman/`。
+
+## 附录：k8s 应用（k3s 主机，cloud3）
+
+服务部署到 k3s 主机时走 `DEPLOY_MODE=k8s`。与 compose 的接入步骤对比如下（`apps/model-ocr/` 是最小参考，`apps/model-logcluster/` 带 PVC）：
+
+1. `apps/<服务>/app.conf`：
+
+   ```bash
+   APP_NAME=<服务>
+   DEPLOY_MODE=k8s
+   DEPLOY_TARGET=cloud3
+   K8S_NAMESPACE=cops
+   K8S_ROLLOUT="deployment/<服务>"
+   K8S_HEALTH="<服务>:8080:/healthz"     # 有状态服务探 /readyz
+   HEALTH_TIMEOUT=180
+   REQUIRED_ENV=""
+   SECRET_ENV=""
+   ```
+
+2. `apps/<服务>/.env`：镜像 + tag、容器端口、资源限制、域名等，供 `k8s.yaml` 用 `${VAR}` 引用。
+   注意 k8s 主机的镜像源是 `ghcr.io`（旧主机的 `ghcr.chenby.cn` 从 cloud3 访问会被 Cloudflare 拦，见 [knowledge.md](knowledge.md) 第 6 节）。
+
+3. `apps/<服务>/k8s.yaml`：多文档 YAML（`---` 分隔），至少包含
+   - `Namespace`（`cops`）
+   - `Middleware redirect-https`（命名空间级对象，**每个单元都写一份**，apply 幂等，不依赖单元部署顺序）
+   - `Deployment`：镜像、`readinessProbe`、资源限制；（有状态服务再加 PVC 与 `volumeMounts`）
+   - `Service`（ClusterIP）
+   - 两条 `IngressRoute`：`entryPoints: [web]` 挂跳转中间件 + `entryPoints: [websecure]` 带 `tls: {certResolver: letsencrypt}`
+
+4. 无需声明 `SHARED_NETWORKS`：同命名空间用 Service 名当主机名即可跨单元互访。
+
+5. 本地校验：
+
+   ```bash
+   scripts/hosts.sh check
+   scripts/render-k8s.py apps/<服务> > /dev/null
+   EVENT_NAME=workflow_dispatch REQUESTED=<服务> scripts/resolve-units.sh
+   ```
+
+6. 提交前确认目标主机已在 `hosts.yaml` 登记，且它对该单元的 `DEPLOY_MODE` 是允许的
+   （`scripts/hosts.sh check` 与 resolve 阶段都会校验）。
+
+新增/迁移主机的完整流程见 [cloud3.md](cloud3.md)「九、接入 cops CD」。
