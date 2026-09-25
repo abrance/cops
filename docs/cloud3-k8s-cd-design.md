@@ -294,7 +294,9 @@ host 端口不再由单元声明：cloud3 上唯一对外入口是 Traefik 的 8
 1. 生成 CI 专用密钥：本机 `ssh-keygen -t ed25519 -f ~/.ssh/cops-deploy-cloud3 -C cops-ci`
 2. 公钥追加到 cloud3：`ssh-copy-id -i ~/.ssh/cops-deploy-cloud3.pub -p 35776 xiaoy@186.244.201.55`
 3. 配 5 个 GitHub Secrets（4.2 节）
-4. DNS 加两条 A 记录指向 `186.244.201.55`：`ocr`、`logcluster`；用 `getent hosts` 确认解析生效
+4. 目标主机上准备部署目录（一次性）：`sudo mkdir -p /opt/cops/secrets && sudo chown -R xiaoy:xiaoy /opt/cops`。
+   CI 以部署用户身份写入单元目录与密钥文件，目录不存在或不可写会在同步步骤报 `mkdir: cannot create directory '/opt/cops': Permission denied`（实施时实际踩到）。
+5. DNS 加两条 A 记录指向 `186.244.201.55`：`ocr`、`logcluster`；用 `getent hosts` 确认解析生效
    - **顺序要求**：先解析生效，再部署带 IngressRoute 的单元。反了会导致 ACME HTTP-01 挑战 404，撞 Let's Encrypt 限流
 
 ### 第 1 步：PR1 — 只加 CD 能力
