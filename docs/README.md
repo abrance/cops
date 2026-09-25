@@ -10,6 +10,7 @@
 | 已接入，想知道怎么写才不出问题 | [best-practices.md](best-practices.md) |
 | 想查镜像源和配置约定 | [knowledge.md](knowledge.md) |
 | 部署失败或容器异常 | [troubleshooting.md](troubleshooting.md) |
+| 要维护 / 重建 cloud3（k3s 主机） | [cloud3.md](cloud3.md) |
 | 想先理解整体怎么运转 | 本文「一图看懂」 |
 
 ## 一图看懂
