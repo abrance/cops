@@ -123,7 +123,34 @@ esac
 | 改完 HelmChartConfig 立即签证书失败 | Traefik 滚动重启期间的挑战请求被旧 Pod 接走；等 `rollout status` 完成再试，或 `rollout restart` 重来 |
 | `visudo` 相关 | 自定义 sudo 规则放 `/etc/sudoers.d/`，文件名**不能带点**，权限 440，改完 `visudo -c` |
 
-## 八、未做 / 待决策
+## 八、接入 cops CD
+
+cloud3 作为第二台主机接入 `cops` 的 CD（多主机 + k8s 部署模式），机制细节见仓库根
+[README.md](../README.md) 的「k8s 部署模式」与 [cloud3-k8s-cd-design.md](cloud3-k8s-cd-design.md)。
+
+登记方式：仓库根 `hosts.yaml` 里的 `cloud3` 段声明 `drivers: k8s` 与五个 Secret 名字；
+单元在 `app.conf` 里写 `DEPLOY_TARGET=cloud3`。CI 侧需要的 Secret：
+
+| Secret | 值 |
+| --- | --- |
+| `CLOUD3_DEPLOY_HOST` | `186.244.201.55` |
+| `CLOUD3_DEPLOY_USER` | `xiaoy` |
+| `CLOUD3_DEPLOY_SSH_KEY` | **CI 专用私钥**（`ssh-keygen -t ed25519 -f cops-deploy-cloud3 -C cops-ci`），公钥追加到主机的 `~/.ssh/authorized_keys` |
+| `CLOUD3_DEPLOY_PORT` | `35776` |
+| `CLOUD3_DEPLOY_KNOWN_HOSTS` | 主机公钥（可选；缺省时 CI 用 `ssh-keyscan` 临时获取） |
+
+部署时发生的事：CI 在 runner 侧用 `scripts/render-k8s.py` 把 `k8s.yaml` + `.env` 渲染成
+`rendered.yaml` → 目录同步到 `/opt/cops/<scope>/<name>/` → 执行 `scripts/deploy-k8s.sh`
+（`kubectl apply` → `rollout status` → 从主机 curl Service 的 ClusterIP 探活 → 可选探公网入口）。
+
+两条与云主机环境强相关的注意事项：
+
+- **kubeconfig**：`deploy-k8s.sh` 通过 `ssh host "bash -s"` 执行，非交互 shell 不会加载
+  `~/.bash_aliases` 里的 `KUBECONFIG`，所以脚本里显式指向 `~/.kube/config`（见第三节第 5 条）。
+- **k3s 托管的 Helm release 不要动**：`traefik` / `traefik-crd` / `gateway-api-crd` 由 k3s 的
+  HelmChart 控制器管理，`helm upgrade` 会与其抢同一份 release。
+
+## 九、未做 / 待决策
 
 - **Gateway API 暂不启用**（CRD 已随 k3s 装好，但 provider 关闭）。原因：Gateway API 的 listener TLS 只能引用 Secret，Traefik 内置 ACME 挂不上去，等于要额外引入 cert-manager + 腾讯云 DNS webhook。触发重新评估：多人/多团队自助开通子域名、需要 TCP/UDP/gRPC、需要标准化灰度语义、或想换掉 Traefik。
 - 泛域名证书（`*.xiaoyxq.top`）未启用。方案：Traefik ACME DNS-01 + lego 的 `tencentcloud` provider（`TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`），好处是以后加服务连 DNS 都不用动。密钥只放 k8s Secret，**不入库**。

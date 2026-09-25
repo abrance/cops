@@ -227,3 +227,56 @@ docker exec model-logcluster python -c "import json,urllib.request as u;print(u.
 **为什么容器没重建？**
 
 期望状态与线上一致（幂等）。需要强制重建用 `workflow_dispatch`，或改一个会改变容器定义的值。
+
+## k8s 单元（cloud3）
+
+### 渲染失败：`引用了 .env 里没有定义的变量`
+
+`scripts/render-k8s.py` 在 runner 侧执行，未定义的 `${VAR}` 会直接失败并列出变量名与行号。
+处理：把变量补进单元的 `.env`，或从 `k8s.yaml` 里删掉该引用。**不要**改成 `${VAR:-默认值}`——
+本渲染器不支持 bash 默认值语法，会以"渲染后仍残留 `${...}`"报错。
+
+### `DEPLOY_TARGET` 相关报错
+
+- `不在 hosts.yaml 中`：`app.conf` 声明的目标主机名与 `hosts.yaml` 里的键不一致。
+- `DEPLOY_MODE 与主机 drivers 不匹配`：例如单元是 `k8s` 却指向了只允许 `compose native` 的 `default` 主机。
+- 本地先跑 `scripts/hosts.sh check`，它会指出注册表里缺字段/未知字段的主机。
+
+### `kubeconfig ... 不存在或不可读`
+
+`deploy-k8s.sh` 通过 `ssh host "bash -s"` 执行，**非交互 shell 不会加载 `~/.bash_aliases` 里的
+`KUBECONFIG`**；而 k3s 自带的 kubectl 在未指定 kubeconfig 时会去读 root-only 的
+`/etc/rancher/k3s/k3s.yaml`，报 permission denied。脚本已显式指向 `~/.kube/config`，主机上按提示准备即可：
+
+```bash
+# 在目标 k3s 主机执行
+sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
+sudo chown "$(id -u):$(id -g)" ~/.kube/config && chmod 600 ~/.kube/config
+```
+
+k3s 轮换客户端证书后这份拷贝会失效，重新复制一次即可。
+
+### `ClusterIP 取值异常`
+
+`K8S_HEALTH` 里写的 Service 名在目标命名空间不存在（或 kubectl 返回了错误信息）。
+`deploy-k8s.sh` 只接受 IPv4 形式的 ClusterIP，取值异常时会打印诊断信息而不是拼出垃圾 URL。
+
+### rollout 超时
+
+`log` 末尾会打印 `describe`、事件与容器日志尾部。先看 `readinessProbe` 是否一直在失败：
+
+```bash
+kubectl -n cops get pods
+kubectl -n cops describe deploy/<名字> | tail -30
+kubectl -n cops logs deploy/<名字> --tail=50
+```
+
+有状态单元（如 `model-logcluster`）探的是 `/readyz`：**属主不对**会让 PVC 写不进去，
+表现为 Pod Running 但 readiness 一直不过。见 cloud3.md 迁移 runbook 里的恢复步骤。
+
+### 公网探活失败但集群内正常
+
+- 域名没解析到目标主机，或解析还没生效：`getent hosts <域名>`。
+- 证书还没签发完：ACME 需要几十秒，重跑一次部署通常就好了。
+- IngressRoute 只写了一条（`[web, websecure]` + `tls`）：Traefik v3 只会生成 websecure 路由器，
+  80 端口与 HTTP-01 挑战都会 404。必须拆两条。

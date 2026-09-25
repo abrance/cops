@@ -48,123 +48,16 @@ jobs:
 
       - name: 计算部署单元列表
         id: detect
-        run: |
-          set -euo pipefail
-
-          # 部署单元有两种范围：
-          #   apps/<名字>         应用
-          #   environment/<名字>  应用依赖的环境组件（中间件等）
-          list_all() {
-            for scope in apps environment; do
-              [ -d "${scope}" ] || continue
-              for name in $(ls "${scope}"); do
-                [ -d "${scope}/${name}" ] && echo "${scope}/${name}"
-              done
-            done
-          }
-
-          requested="${{ github.event.inputs.app }}"
-          event="${{ github.event_name }}"
-          if [ -n "${requested}" ]; then
-            # 手动指定：支持 <scope>/<名字>，也支持只写名字（在两个范围里查找）
-            case "${requested}" in
-              */*)
-                candidates="${requested}"
-                ;;
-              *)
-                candidates=""
-                for scope in apps environment; do
-                  if [ -d "${scope}/${requested}" ]; then
-                    candidates="${candidates} ${scope}/${requested}"
-                  fi
-                done
-                if [ -z "${candidates}" ]; then
-                  echo "找不到部署单元 ${requested}：apps/ 与 environment/ 下都没有这个目录" >&2
-                  exit 1
-                fi
-                ;;
-            esac
-          elif [ "${event}" = "schedule" ] || [ "${event}" = "workflow_dispatch" ]; then
-            # 定时任务或未指定单元的手动触发：部署全部
-            candidates="$(list_all)"
-          else
-            # push 与 pull_request：按变更文件计算受影响单元
-            if [ "${event}" = "pull_request" ]; then
-              base="${{ github.event.pull_request.base.sha }}"
-              head="${{ github.event.pull_request.head.sha }}"
-            else
-              base="${{ github.event.before }}"
-              head="${{ github.sha }}"
-            fi
-            if [ -z "${base}" ] \
-              || [ "${base}" = "0000000000000000000000000000000000000000" ] \
-              || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-              # 首次推送或基线不可用：无法计算增量，保守地部署全部
-              candidates="$(list_all)"
-            else
-              changed="$(git diff --name-only "${base}" "${head}")"
-              if grep -Eq '^(scripts/|\.github/workflows/deploy\.yml$)' <<<"${changed}"; then
-                # 部署逻辑自身变更：全量部署以应用新逻辑
-                candidates="$(list_all)"
-              elif grep -Eq '^(apps|environment)/' <<<"${changed}"; then
-                candidates="$(grep -E '^(apps|environment)/' <<<"${changed}" | awk -F/ '{print $1"/"$2}' | sort -u)"
-              else
-                # 变更不涉及任何部署单元：无需部署
-                candidates=""
-              fi
-            fi
-          fi
-
-          items="[]"
-          seen=""
-          for candidate in ${candidates}; do
-            scope="${candidate%%/*}"
-            name="${candidate#*/}"
-            case "${scope}" in
-              apps | environment) ;;
-              *)
-                echo "忽略未知范围: ${candidate}" >&2
-                continue
-                ;;
-            esac
-            if ! printf '%s' "${name}" | grep -Eq '^[a-z0-9][a-z0-9-]*$'; then
-              echo "忽略非法名字: ${candidate}" >&2
-              continue
-            fi
-            # 名字在两个范围之间必须唯一：密钥文件与容器名都按名字定位
-            if printf ' %s ' "${seen}" | grep -q " ${name} "; then
-              echo "名字在 apps/ 与 environment/ 之间冲突: ${name}" >&2
-              exit 1
-            fi
-            seen="${seen} ${name}"
-            mode="compose"
-            if [ -f "${candidate}/app.conf" ]; then
-              mode="$(sed -n 's/^DEPLOY_MODE=//p' "${candidate}/app.conf" | tail -1)"
-              mode="${mode:-compose}"
-            fi
-            case "${mode}" in
-              compose)
-                if [ ! -f "${candidate}/compose.yaml" ]; then
-                  echo "忽略缺少 compose.yaml 的 compose 单元: ${candidate}" >&2
-                  continue
-                fi
-                ;;
-              native)
-                if [ ! -f "${candidate}/native/deploy-native.sh" ]; then
-                  echo "忽略缺少 native/deploy-native.sh 的 native 单元: ${candidate}" >&2
-                  continue
-                fi
-                ;;
-              *)
-                echo "忽略未知 DEPLOY_MODE=${mode} 的单元: ${candidate}" >&2
-                continue
-                ;;
-            esac
-            items="$(jq -c --arg s "${scope}" --arg n "${name}" '. + [{scope:$s,name:$n}]' <<<"${items}")"
-          done
-
-          echo "待部署单元: ${items}"
-          echo "items=${items}" >> "${GITHUB_OUTPUT}"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          # workflow_dispatch 的 app 输入；留空=全部
+          REQUESTED: ${{ github.event.inputs.app }}
+          # 增量基线与终点：PR 用 base/head，push 用 before/sha
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        # 解析逻辑在 scripts/resolve-units.sh：本地可复现（见该脚本头部注释），
+        # 并在这里完成 hosts.yaml、DEPLOY_MODE/DEPLOY_TARGET 的一致性校验
+        run: bash scripts/resolve-units.sh
 
   validate:
     name: 校验 ${{ matrix.item.scope }}/${{ matrix.item.name }}
@@ -179,27 +72,36 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 校验编排文件
+      - name: 校验单元定义
         run: |
           set -euo pipefail
           dir="${{ matrix.item.scope }}/${{ matrix.item.name }}"
-          mode="compose"
-          if [ -f "${dir}/app.conf" ]; then
-            mode="$(sed -n 's/^DEPLOY_MODE=//p' "${dir}/app.conf" | tail -1)"
-            mode="${mode:-compose}"
-          fi
-          if [ "${mode}" = "native" ]; then
-            # native 单元非容器交付：校验部署脚本语法与期望状态文件齐备
-            test -f "${dir}/.env"
-            test -f "${dir}/app.conf"
-            test -d "${dir}/conf"
-            bash -n "${dir}/native/deploy-native.sh"
-            echo "native 单元 ${dir} 校验通过"
-          else
-            docker compose \
-              --project-directory "${dir}" \
-              -f "${dir}/compose.yaml" \
-              config --quiet
+          mode="${{ matrix.item.mode }}"
+          case "${mode}" in
+            native)
+              # native 单元非容器交付：校验部署脚本语法与期望状态文件齐备
+              test -f "${dir}/.env"
+              test -f "${dir}/app.conf"
+              test -d "${dir}/conf"
+              bash -n "${dir}/native/deploy-native.sh"
+              echo "native 单元 ${dir} 校验通过"
+              ;;
+            k8s)
+              # k8s 单元：渲染即校验——未定义变量、残留 ${...}、缺 apiVersion/kind 都会失败
+              python3 scripts/render-k8s.py "${dir}" > /dev/null
+              echo "k8s 单元 ${dir} 渲染校验通过"
+              ;;
+            compose)
+              docker compose \
+                --project-directory "${dir}" \
+                -f "${dir}/compose.yaml" \
+                config --quiet
+              ;;
+            *)
+              echo "未知 DEPLOY_MODE=${mode}" >&2
+              exit 1
+              ;;
+          esac
           fi
 
   deploy:
@@ -217,54 +119,80 @@ jobs:
       matrix:
         item: ${{ fromJSON(needs.resolve.outputs.items) }}
     env:
+      # GitHub 不支持按变量名动态读 secret，因此**所有**主机的凭据都要在这里静态映射；
+      # 具体用哪一组由 matrix.item.target 经 scripts/hosts.sh 决定（见「解析目标主机」步骤）。
+      # 新增主机时：在 hosts.yaml 登记 + 在此追加映射，两处名字必须一致。
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      # 校验步骤用 ${!name} 间接取值，所以私钥必须在 job env 里映射，不能只写在单个 step 的 env
       DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+      CLOUD3_DEPLOY_HOST: ${{ secrets.CLOUD3_DEPLOY_HOST }}
+      CLOUD3_DEPLOY_USER: ${{ secrets.CLOUD3_DEPLOY_USER }}
+      CLOUD3_DEPLOY_SSH_KEY: ${{ secrets.CLOUD3_DEPLOY_SSH_KEY }}
+      CLOUD3_DEPLOY_PORT: ${{ secrets.CLOUD3_DEPLOY_PORT }}
+      CLOUD3_DEPLOY_KNOWN_HOSTS: ${{ secrets.CLOUD3_DEPLOY_KNOWN_HOSTS }}
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
 
-      - name: 校验部署凭据
+      - name: 解析目标主机并准备 SSH 凭据
         run: |
           set -euo pipefail
-          missing=""
-          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_SSH_KEY; do
-            if [ -z "${!name:-}" ]; then
-              missing="${missing} ${name}"
-            fi
-          done
-          if [ -n "${missing}" ]; then
-            echo "缺少 GitHub Actions secret:${missing}" >&2
-            exit 1
-          fi
-          port="${{ secrets.DEPLOY_PORT }}"
-          echo "DEPLOY_PORT=${port:-22}" >> "${GITHUB_ENV}"
+          target="${{ matrix.item.target }}"
 
-      - name: 写入部署私钥
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          # 写入 runner 默认私钥路径：只有这一把身份，后续 ssh 无需再传 -i
-          printf '%s\n' "${DEPLOY_SSH_KEY}" > ~/.ssh/id_rsa
+          # 需要非空的凭据：空值直接失败并点名缺哪个 secret
+          resolve() {
+            local key="$1" var
+            var="$(bash scripts/hosts.sh "${target}" secret "${key}")"
+            if [ -z "${!var:-}" ]; then
+              echo "缺少 GitHub Actions secret: ${var}（主机 ${target} 的 ${key}）" >&2
+              echo "按 hosts.yaml 的登记补齐 Secret，再重跑。" >&2
+              exit 1
+            fi
+            printf '%s' "${!var}"
+          }
+
+          host="$(resolve host)"
+          user="$(resolve user)"
+          port="$(resolve port)"
+
+          # 私钥只在文件里落地，不写进 GITHUB_ENV：含换行，写进 env 文件会破坏格式
+          key="$(resolve key)"
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${key}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           # 私钥格式错或带口令时在此立即失败，不要拖到 ssh 报 Permission denied
           ssh-keygen -y -P '' -f ~/.ssh/id_rsa >/dev/null
           ssh-keygen -l -f ~/.ssh/id_rsa
 
-      - name: 配置 SSH 主机密钥
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          if [ -n "${{ secrets.DEPLOY_KNOWN_HOSTS }}" ]; then
-            printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          # 主机密钥：有 secret 就用固定的，没有才 ssh-keyscan（可选项，与旧行为一致）
+          known_hosts_var="$(bash scripts/hosts.sh "${target}" secret known_hosts)"
+          known_hosts="${!known_hosts_var:-}"
+          if [ -n "${known_hosts}" ]; then
+            printf '%s\n' "${known_hosts}" > ~/.ssh/known_hosts
           else
-            ssh-keyscan -p "${DEPLOY_PORT}" -H "${DEPLOY_HOST}" > ~/.ssh/known_hosts 2>/dev/null
-            echo "已用 ssh-keyscan 获取主机密钥；建议改用 DEPLOY_KNOWN_HOSTS 固定指纹"
+            ssh-keyscan -p "${port}" -H "${host}" > ~/.ssh/known_hosts 2>/dev/null
+            echo "已用 ssh-keyscan 获取主机密钥；建议把 ${host} 的公钥写进 secret ${known_hosts_var}"
           fi
           chmod 600 ~/.ssh/known_hosts
+
+          {
+            echo "DEPLOY_HOST=${host}"
+            echo "DEPLOY_USER=${user}"
+            echo "DEPLOY_PORT=${port}"
+          } >> "${GITHUB_ENV}"
+
+          echo "目标主机: ${target}（${user}@${host}:${port}）"
+
+      - name: 渲染 k8s 期望状态
+        if: matrix.item.mode == 'k8s'
+        run: |
+          set -euo pipefail
+          dir="${{ matrix.item.scope }}/${{ matrix.item.name }}"
+          # 渲染放 runner 侧：目标主机不需要 python/gettext，渲染错误也不会拖到集群里才发现
+          python3 scripts/render-k8s.py "${dir}" > "${dir}/rendered.yaml"
+          echo "已渲染 ${dir}/rendered.yaml（$(grep -c '^kind:' "${dir}/rendered.yaml") 个资源）"
 
       - name: 同步期望状态文件到云主机
         run: |
@@ -371,6 +299,11 @@ jobs:
       - name: 执行部署
         run: |
           set -euo pipefail
+          # k8s 模式走 scripts/deploy-k8s.sh（apply + rollout + 探活），其余走 scripts/deploy.sh
+          case "${{ matrix.item.mode }}" in
+            k8s) host_script="scripts/deploy-k8s.sh" ;;
+            *) host_script="scripts/deploy.sh" ;;
+          esac
           ssh -p "${DEPLOY_PORT}" -o StrictHostKeyChecking=yes \
             "${DEPLOY_USER}@${DEPLOY_HOST}" "bash -s -- '${{ matrix.item.name }}' '${{ matrix.item.scope }}'" \
-            < scripts/deploy.sh
+            < "${host_script}"
