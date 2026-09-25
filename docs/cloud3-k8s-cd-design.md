@@ -361,6 +361,8 @@ ssh <旧主机> 'docker volume rm model-logcluster_state'
 
 现有流程**没有**"删除旧主机单元"的能力（`--remove-orphans` 只作用于同一 compose 项目内），因此这一步必须手工，也是本 runbook 必须存在的原因。
 
+**容易漏的一条**：旧主机的公网入口由 `dockpanel` 的 traefik（`dockpanel-traefik` 容器）管理，它的路由存在 dockpanel 自己的库里（`dockpanel-postgres`），**不在静态配置里**，所以在 `/etc/dockpanel/traefik/` 下 grep 不到（该目录还是 root-only）。云厂商 DNS 已经把 `ocr` / `logcluster` 指向 cloud3，所以旧路由不会再被命中；但如果面板里确实为这两个服务配过指向 `127.0.0.1:9101` / `127.0.0.1:9103` 的规则，迁移后应删掉或改指 cloud3 的域名，避免留下一条会 502 的入口。实施时确认：旧主机上无 model-\* 容器残留，但面板侧的路由需人工核对。
+
 ## 6. 回滚
 
 | 场景 | 动作 |
