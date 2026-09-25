@@ -99,6 +99,12 @@
 
 新增主机：在 `hosts.yaml` 加一段 → 建这 5 个 secret → 在 `deploy.yml` 的 `env:` 段加 5 行映射。`scripts/hosts.sh check` 会校验注册表结构。
 
+目标主机上的前置（一次性）：部署目录必须存在且对部署用户可写，否则同步步骤会报 `mkdir: cannot create directory '/opt/cops': Permission denied`。
+
+```bash
+sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /opt/cops
+```
+
 应用运行期密钥统一放 GitHub Secrets，由 CI 在部署前写入云主机的 `/opt/cops/secrets/<app>.env`（权限 600，不入库）。密钥通过 stdin 传输，不经过命令行，也不会落盘到 runner。
 
 ## 部署流程

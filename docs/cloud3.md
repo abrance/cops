@@ -87,6 +87,7 @@ esac
 | --- | --- |
 | `kube-system/HelmChartConfig traefik` | 上面的 ACME + persistence 配置 |
 | `kube-system/pvc traefik` | 存 `acme.json` |
+| `cops/`（`model-logcluster` 的 Deployment/Service/PVC/IngressRoute、共享 `Middleware redirect-https`） | 从旧主机迁入的单元，由 CI 部署（见第八节） |
 | `demo/`（whoami deploy+svc、`IngressRoute whoami-http`/`whoami-tls`、`Middleware redirect-https`） | **临时验证用**，可作为新服务模板；不要了就 `kubectl delete ns demo` |
 | `186.244.201.55.sslip.io` 的证书 | 已签发成功，作为端到端验证证据 |
 
@@ -138,6 +139,13 @@ cloud3 作为第二台主机接入 `cops` 的 CD（多主机 + k8s 部署模式�
 | `CLOUD3_DEPLOY_SSH_KEY` | **CI 专用私钥**（`ssh-keygen -t ed25519 -f cops-deploy-cloud3 -C cops-ci`），公钥追加到主机的 `~/.ssh/authorized_keys` |
 | `CLOUD3_DEPLOY_PORT` | `35776` |
 | `CLOUD3_DEPLOY_KNOWN_HOSTS` | 主机公钥（可选；缺省时 CI 用 `ssh-keyscan` 临时获取） |
+
+主机侧前置（一次性，**漏了会以 `mkdir: cannot create directory '/opt/cops': Permission denied` 失败**）：
+
+```bash
+sudo mkdir -p /opt/cops/secrets
+sudo chown -R xiaoy:xiaoy /opt/cops     # CI 以 xiaoy 身份同步单元目录与密钥文件
+```
 
 部署时发生的事：CI 在 runner 侧用 `scripts/render-k8s.py` 把 `k8s.yaml` + `.env` 渲染成
 `rendered.yaml` → 目录同步到 `/opt/cops/<scope>/<name>/` → 执行 `scripts/deploy-k8s.sh`
