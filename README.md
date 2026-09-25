@@ -24,7 +24,7 @@
 | 应用 | 容器 | 镜像 | 说明 |
 | --- | --- | --- | --- |
 | `lems` | `lems`、`emsdevice` | `ghcr.chenby.cn/abrance/ems`、`ghcr.chenby.cn/abrance/emsdevice` | EMS 主服务与 ess_demo Modbus 从站 |
-| `model-ocr` | `model-ocr` | `ghcr.chenby.cn/abrance/modelman-ocr` | PP-OCR 文字识别服务（MNN/CPU）；只监听 `127.0.0.1:9101`，与 `lems` 通过 `cops-shared` 网络互访；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
+| `model-ocr` | `model-ocr` | `ghcr.chenby.cn/abrance/modelman-ocr` | PP-OCR 文字识别服务（MNN/CPU）；已迁 cloud3（k8s），lems 经公网入口 `https://ocr.xiaoyxq.top` 调用；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | 无（systemd） | GitHub Releases 静态二进制包 | GSE 采集链路的 6 个组件，native 部署，数据保留在 `/opt/vectorman` |
@@ -155,9 +155,9 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 
 ## 跨单元互访
 
-不同单元的容器属于不同的 compose 项目，默认在两个网络里，互相不可达；而把服务端口绑到宿主机回环（`127.0.0.1:xxxx`）后，别的容器也访问不到宿主机回环。需要互访时用一张固定名字的共享网络：
+不同单元的容器属于不同的 compose 项目，默认在两个网络里，互相不可达；而把服务端口绑到宿主机回环（`127.0.0.1:xxxx`）后，别的容器也访问不到宿主机回环。同机单元需要互访时，用一张固定名字的共享网络（跨主机则走公网入口，见 model-ocr 与 lems 的现状）：
 
-1. 双方都在 `app.conf` 里声明同一张网络：
+1. 双方都在 `app.conf` 里声明同一张网络（`deploy.sh` 会幂等创建，不依赖单元的部署顺序）：
 
    ```bash
    SHARED_NETWORKS="cops-shared"
@@ -182,6 +182,8 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 为什么网络要 `external` 且由 `deploy.sh` 创建：若两边都让 compose 自己创建同一名字的网络，先创建的那个会带上自己的项目标签，后一个单元执行时会因为标签不匹配直接报错。`deploy.sh` 按 `SHARED_NETWORKS` 幂等创建，就绕开了这个坑，也不依赖单元的部署顺序（全量部署不保证顺序）。
 
 共享网络不改变对外暴露方式：被调用方仍只绑回环，公网入口与鉴权由宿主机反向代理决定。
+
+> 当前仓库里没有在用 `SHARED_NETWORKS` 的单元（`lems` 与 `model-ocr` 的同机直连方案随 model-ocr 迁到 cloud3 而废弃）；这段保留作同机互访的参考做法。
 
 ## 新增一个环境组件
 

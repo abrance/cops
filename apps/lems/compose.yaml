@@ -28,17 +28,14 @@ services:
       QINIU_BUCKET: ${QINIU_BUCKET:-}
       QINIU_DOMAIN: ${QINIU_DOMAIN:-}
       QINIU_ZONE: ${QINIU_ZONE:-z2}
-      # OCR 服务（同机 model-ocr 单元）：走 cops-shared 网络直连容器名，
-      # 不经宿主机回环也不经公网，因此不需要对外暴露 OCR 端口或 token
+      # OCR 服务（model-ocr 单元，已迁 cloud3 的 k3s）：走公网入口 https://ocr.xiaoyxq.top，
+      # 证书由 Traefik 自动签发（历史同机方案走 cops-shared 网络直连，已废弃）
       OCR_BASE_URL: ${OCR_BASE_URL:-}
       OCR_TIMEOUT_SECONDS: ${OCR_TIMEOUT_SECONDS:-60}
     command:
       - ./ems
       - --web=true
       - --force=true
-    networks:
-      - default
-      - shared
     ports:
       - "${LEMS_PORT}:80"
     volumes:
@@ -91,9 +88,3 @@ services:
 
 volumes:
   lems-data:
-
-networks:
-  # 与 model-ocr 共用的外部网络（由 deploy.sh 按 app.conf 的 SHARED_NETWORKS 创建）
-  shared:
-    external: true
-    name: cops-shared
