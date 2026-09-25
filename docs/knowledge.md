@@ -23,7 +23,7 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 | --- | --- | --- | --- |
 | `apps/lems` | `lems` | `LEMS_IMAGE` + `LEMS_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ems:v1.0.8` |
 | `apps/lems` | `emsdevice` | `EMSDEVICE_IMAGE` + `EMSDEVICE_IMAGE_TAG` | `ghcr.chenby.cn/abrance/emsdevice:v1.0.5` |
-| `apps/ptdoc` | `ptdoc` | `PTDOC_IMAGE` + `PTDOC_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc:v1.0.11` |
+| `apps/ptdoc` | `ptdoc` | `PTDOC_IMAGE` + `PTDOC_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc:v1.0.12` |
 | `environment/ptdoc-qdrant` | `qdrant` | `QDRANT_IMAGE` + `QDRANT_IMAGE_TAG` | `docker.io/qdrant/qdrant:v1.19.1` |
 | `environment/ptdoc-qdrant` | `gateway` | `GATEWAY_IMAGE` + `GATEWAY_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc-qdrant-gateway:1.0.7` |
 | `apps/model-ocr` | `model-ocr` | `MODEL_OCR_IMAGE` + `MODEL_OCR_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-ocr:v0.1.3-6476ffb` |
