@@ -7,8 +7,11 @@
 # 结构约定（scripts/hosts.sh 会严格校验，写错字段名或缩进会直接失败）：
 #   hosts:
 #     <主机名>:            # 两位缩进
-#       drivers: <驱动列表>  # 四位缩进，空格分隔，取值只能是 compose / native / k8s；
-#                            # 单元的 DEPLOY_MODE 必须在这个列表里（旧主机上 compose 与 native 并存）
+#       drivers: <驱动列表>    # 四位缩进，空格分隔，取值只能是 compose / native / k8s；
+#                              # 单元的 DEPLOY_MODE 必须在这个列表里（旧主机上 compose 与 native 并存）
+#       registries: <镜像源>   # 四位缩进，空格分隔。单元 .env 里所有 *_IMAGE 的 registry
+#                              # 必须在这个列表里，否则 PR 阶段失败。无 registry 前缀的镜像
+#                              # （如 qdrant/qdrant）算作 docker.io
 #       notes: <说明>      # 可选
 #       secrets:           # 四位缩进，五个键都是必填（六位缩进）
 #         host: <Secrets 名>
@@ -21,6 +24,8 @@
 hosts:
   default:
     drivers: compose native
+    # 旧主机：应用镜像走 ghcr.chenby.cn（该镜像站只对它放行），上游官方镜像走 docker.io
+    registries: ghcr.chenby.cn docker.io
     notes: 现有云主机，compose / native 单元的默认目标
     secrets:
       host: DEPLOY_HOST
@@ -30,6 +35,8 @@ hosts:
       known_hosts: DEPLOY_KNOWN_HOSTS
   cloud3:
     drivers: k8s
+    # cloud3 访问 ghcr.chenby.cn 会被 Cloudflare 拦成 403，只能用 ghcr.io 直连
+    registries: ghcr.io
     notes: k3s 单机，环境与人工改动见 docs/cloud3.md
     secrets:
       host: CLOUD3_DEPLOY_HOST

@@ -68,6 +68,7 @@
 │   ├── deploy.sh          # 在云主机上执行的部署脚本（compose / native）
 │   ├── deploy-k8s.sh      # 在 k3s 主机上执行的部署脚本（kubectl apply + rollout + 探活）
 │   ├── hosts.sh           # 查询 hosts.yaml（CI 与本地排障共用）
+│   ├── check-registries.sh # 镜像源守卫：*_IMAGE 必须在该主机允许的 registry 内
 │   ├── resolve-units.sh   # 计算本次要部署哪些单元（CI 的 resolve job 调用）
 │   └── render-k8s.py      # 渲染 k8s 单元的 ${VAR}（在 runner 侧执行）
 └── .github/workflows/
@@ -97,6 +98,15 @@
 
 每台主机的 **host / user / key 必填**；**port 缺省 22**；**known_hosts 缺省时用 `ssh-keyscan` 临时获取**（建议固定下来）。
 
+每台主机还声明两组策略字段：
+
+| 字段 | 作用 |
+| --- | --- |
+| `drivers` | 该主机允许的部署模式（`compose` / `native` / `k8s`）；单元的 `DEPLOY_MODE` 必须在此列表内 |
+| `registries` | 该主机允许的镜像源（如 `ghcr.chenby.cn docker.io` 与 `ghcr.io`）；单元的 `*_IMAGE` 必须在此列表内，由 `scripts/check-registries.sh` 在 PR 阶段强制 |
+
+`registries` 存在的原因：镜像源按主机不同——旧主机用 `ghcr.chenby.cn`（该站只对它放行），cloud3 只能用 `ghcr.io`（访问前者会被 Cloudflare 拦成 403）。谁把 `*_IMAGE` 的 registry 换回去，PR 就红，不会拖到部署时才发现拉不动镜像。
+
 新增主机：在 `hosts.yaml` 加一段 → 建这 5 个 secret → 在 `deploy.yml` 的 `env:` 段加 5 行映射。`scripts/hosts.sh check` 会校验注册表结构。
 
 目标主机上的前置（一次性）：部署目录必须存在且对部署用户可写，否则同步步骤会报 `mkdir: cannot create directory '/opt/cops': Permission denied`。
@@ -112,7 +122,8 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 1. 修改 `apps/<app>/`（应用）或 `environment/<name>/`（环境组件）下的期望状态并提交到 `main`。
 2. 开 PR 后 Actions 先做编排校验，不触碰云主机；合入 `main` 后进入部署。
 3. Actions 计算受影响单元列表（`<scope>/<名字>`，含每个单元的 `mode` 与 `target`），对每个单元执行：
-   - 按模式校验：compose 跑 `docker compose config`；native 校验脚本与期望状态；k8s 跑 `scripts/render-k8s.py` 渲染
+   - 先跑镜像源守卫 `scripts/check-registries.sh`（单元的 `*_IMAGE` 必须在该主机的 `registries` 白名单内）
+   - 再按模式校验：compose 跑 `docker compose config`；native 校验脚本与期望状态；k8s 跑 `scripts/render-k8s.py` 渲染
    - 通过 SSH 将目录同步到目标主机的 `/opt/cops/<scope>/<名字>/`（k8s 单元连渲染产物 `rendered.yaml` 一起同步）
    - 在目标主机上执行：compose/native 走 `scripts/deploy.sh`（拉镜像 → `up -d` → 等健康 → 探活）；k8s 走 `scripts/deploy-k8s.sh`（`kubectl apply` → `rollout status` → 探 Service 的 ClusterIP → 可选探公网入口）
 4. 部署失败时 job 非零退出，容器日志会打印到 Actions 输出。
@@ -259,6 +270,10 @@ EVENT_NAME=push BASE_SHA=HEAD~1 HEAD_SHA=HEAD scripts/resolve-units.sh
 
 # 主机注册表结构自检（缺字段/未知字段/非法驱动都会失败）
 scripts/hosts.sh check
+
+# 镜像源守卫（与 CI 的 validate 同一份逻辑）
+scripts/check-registries.sh apps/model-ocr cloud3
+scripts/check-registries.sh apps/lems default
 
 # k8s 单元的渲染校验（未定义变量、残留 ${...}、缺 apiVersion/kind 都会失败）
 scripts/render-k8s.py apps/model-ocr > /dev/null

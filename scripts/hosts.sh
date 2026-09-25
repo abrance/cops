@@ -5,6 +5,7 @@
 #
 #   scripts/hosts.sh targets                列出所有主机名
 #   scripts/hosts.sh <主机> drivers         该主机允许的部署驱动（空格分隔，如 "compose native"）
+#   scripts/hosts.sh <主机> registries      该主机允许的镜像 registry（空格分隔，如 "ghcr.io"）
 #   scripts/hosts.sh <主机> secret <键>     该主机某个凭据对应的 GitHub Secrets 名字
 #                                           键：host | user | key | port | known_hosts
 #   scripts/hosts.sh <主机> secrets         输出五行 "<键>=<Secrets 名字>"
@@ -18,6 +19,8 @@ set -euo pipefail
 REPO_ROOT="${COPS_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 HOSTS_FILE="${REPO_ROOT}/hosts.yaml"
 SECRET_KEYS="host user key port known_hosts"
+# 不需要 Secrets；但必须是每个主机的必填字段，否则镜像源检查无从判断
+PLAIN_KEYS="drivers registries"
 
 if [ ! -f "${HOSTS_FILE}" ]; then
   echo "找不到主机注册表 ${HOSTS_FILE}" >&2
@@ -27,9 +30,10 @@ fi
 # 解析成 TSV：主机名 <TAB> drivers <TAB> host <TAB> user <TAB> key <TAB> port <TAB> known_hosts
 # 解析不了的形状（未知字段、重复主机）直接报错退出。
 parse_hosts() {
-  awk -v secret_keys="${SECRET_KEYS}" '
+  awk -v secret_keys="${SECRET_KEYS}" -v plain_keys="${PLAIN_KEYS}" '
     BEGIN {
       n = split(secret_keys, keys, " ")
+      pn = split(plain_keys, pkeys, " ")
       in_hosts = 0
       index_ = 0
       problems = 0
@@ -48,7 +52,10 @@ parse_hosts() {
       for (i = 1; i <= n; i++) {
         if (secrets[keys[i]] == "") { printf "hosts.yaml: 主机 %s 缺少 secrets.%s\n", name, keys[i] > "/dev/stderr"; problems++ }
       }
-      printf "%s\t%s", name, drivers
+      for (i = 1; i <= pn; i++) {
+        if (plain[pkeys[i]] == "") { printf "hosts.yaml: 主机 %s 缺少 %s\n", name, pkeys[i] > "/dev/stderr"; problems++ }
+      }
+      printf "%s\t%s\t%s", name, drivers, registries
       for (i = 1; i <= n; i++) printf "\t%s", secrets[keys[i]]
       printf "\n"
     }
@@ -61,7 +68,9 @@ parse_hosts() {
       name = $1; sub(/:$/, "", name)
       if (seen[name]++) { printf "hosts.yaml: 主机 %s 重复定义\n", name > "/dev/stderr"; problems++ }
       drivers = ""
+      registries = ""
       delete secrets
+      delete plain
       in_secrets = 0
       next
     }
@@ -69,7 +78,8 @@ parse_hosts() {
     /^    [A-Za-z0-9._-]+:/ {
       key = $1; sub(/:$/, "", key)
       value = $0; sub(/^[[:space:]]*[A-Za-z0-9._-]+:[[:space:]]*/, "", value)
-      if (key == "drivers") { drivers = value; in_secrets = 0 }
+      if (key == "drivers") { drivers = value; plain[key] = value; in_secrets = 0 }
+      else if (key == "registries") { registries = value; plain[key] = value; in_secrets = 0 }
       else if (key == "notes") { in_secrets = 0 }
       else if (key == "secrets") { in_secrets = 1 }
       else { printf "hosts.yaml: 主机 %s 出现未知字段 %s\n", name, key > "/dev/stderr"; problems++ }
@@ -99,11 +109,12 @@ all_hosts() { parse_hosts; }
 lookup() {
   local want_host="$1" field="$2" key="$3"
   local found=0
-  while IFS=$'\t' read -r name drivers s_host s_user s_key s_port s_known; do
+  while IFS=$'\t' read -r name drivers registries s_host s_user s_key s_port s_known; do
     [ "${name}" = "${want_host}" ] || continue
     found=1
     case "${field}" in
       drivers) printf '%s\n' "${drivers}" ;;
+      registries) printf '%s\n' "${registries}" ;;
       secret)
         case "${key}" in
           host) printf '%s\n' "${s_host}" ;;
