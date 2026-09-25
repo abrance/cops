@@ -1,0 +1,137 @@
+# model-ocr 期望状态（k8s / k3s）
+#
+# 由 cops 部署流程执行：
+#   CI 侧 scripts/render-k8s.py 把本文件里的占位符按同级 .env 与 app.conf 渲染成
+#   rendered.yaml → 同步到 cloud3 的 /opt/cops/apps/model-ocr/ →
+#   scripts/deploy-k8s.sh 做 kubectl apply + rollout + 探活
+#
+# 单元约定见仓库根 README 的「k8s 部署模式」；环境细节见 docs/cloud3.md。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+# 80 → 443 跳转中间件：命名空间级对象，本单元与 model-logcluster 各写一份完全相同的，
+# kubectl apply 幂等，这样不依赖单元部署顺序（全量部署不保证顺序）。
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: ${K8S_NAMESPACE}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-ocr
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: model-ocr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: model-ocr
+  template:
+    metadata:
+      labels:
+        app: model-ocr
+    spec:
+      containers:
+        - name: model-ocr
+          image: ${MODEL_OCR_IMAGE}:${MODEL_OCR_IMAGE_TAG}
+          ports:
+            - containerPort: ${MODEL_OCR_PORT}
+          env:
+            # 服务默认不加鉴权。入口现在由 IngressRoute 对外提供服务，
+            # 要收敛时：.env 里填 AUTH_TOKEN 并在 app.conf 的 SECRET_ENV 声明
+            # （k8s 侧还需要以 Secret 形式注入，见 README「k8s 部署模式」）
+            - name: AUTH_TOKEN
+              value: "${AUTH_TOKEN}"
+            - name: DEFAULT_MODEL
+              value: "${MODEL_OCR_DEFAULT_MODEL}"
+            - name: PRELOAD_MODELS
+              value: "${MODEL_OCR_PRELOAD_MODELS}"
+            - name: CONF_THRESHOLD
+              value: "${MODEL_OCR_CONF_THRESHOLD}"
+            - name: MAX_CONCURRENCY
+              value: "${MODEL_OCR_MAX_CONCURRENCY}"
+            - name: MAX_SIDE
+              value: "${MODEL_OCR_MAX_SIDE}"
+            # 限制推理线程数，避免与同机其它服务争抢 CPU
+            - name: OMP_NUM_THREADS
+              value: "${MODEL_OCR_OMP_NUM_THREADS}"
+            # 访问日志需要 tower_http=debug，级别写到 .env 便于随时调整
+            - name: RUST_LOG
+              value: "${MODEL_OCR_RUST_LOG}"
+          # 首次启动要加载 MNN 模型，给足预热时间；探针用二进制自带的探测模式，
+          # 镜像内不装 curl/wget，kubelet 走 HTTP 即可。
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: ${MODEL_OCR_PORT}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # 不配 livenessProbe：推理服务偶发的慢请求不该触发重启，
+          # 出问题时由 readiness 摘流量 + 人工介入，比自动重启更好排查。
+          resources:
+            limits:
+              cpu: "${MODEL_OCR_CPU_LIMIT}"
+              memory: ${MODEL_OCR_MEM_LIMIT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-ocr
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: model-ocr
+spec:
+  selector:
+    app: model-ocr
+  ports:
+    - name: http
+      port: ${MODEL_OCR_PORT}
+      targetPort: ${MODEL_OCR_PORT}
+---
+# 公网入口：必须拆成两条 IngressRoute。Traefik v3 里若把 [web, websecure] 与
+# tls.certResolver 写在同一条上，只会生成 websecure 路由器：80 端口 404，
+# 而且 ACME 的 HTTP-01 挑战同样 404（见 docs/cloud3.md 坑清单）。
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: model-ocr
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: model-ocr
+          port: ${MODEL_OCR_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: model-ocr-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      services:
+        - name: model-ocr
+          port: ${MODEL_OCR_PORT}
+  tls:
+    certResolver: letsencrypt
