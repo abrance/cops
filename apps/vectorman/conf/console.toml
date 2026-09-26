@@ -1,5 +1,0 @@
-# console 桌面门户期望配置（由 cops 下发，勿在云主机手改）
-listen = "0.0.0.0:7200"
-web_dir = "web"
-# 应用目录保存在组件目录内，升级时保留
-data_file = "apps.json"
