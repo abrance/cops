@@ -160,6 +160,13 @@ gse-agent.toml:${ROOT}/gse-agent/conf/gse-agent.toml
 console.toml:${ROOT}/console/conf/console.toml
 EOF
 
+  # token 占位替换：conf/gse-agent.toml 里的 token 是占位符（凭据不进公开仓库），
+  # 这里用运行期密钥 VECTORMAN_AGENT_TOKEN 落到云主机的配置文件上。
+  agent_token="$(sed -n 's/^VECTORMAN_AGENT_TOKEN=//p' "${SECRETS_FILE}" | tail -1)"
+  [ -n "${agent_token}" ] || die "SECRETS 里缺少 VECTORMAN_AGENT_TOKEN（cloud3 的 server 开了鉴权）"
+  sudo_run sed -i "s|^token = .*|token = "${agent_token}"|" "${ROOT}/gse-agent/conf/gse-agent.toml"
+  unset agent_token
+
   # 退役改名前的旧 apiserver
   if sudo_run test -f "${OLD_UNIT}"; then
     log "退役旧 unit ${OLD_UNIT}"

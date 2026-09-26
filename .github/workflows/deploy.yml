@@ -238,6 +238,7 @@ jobs:
           PTDOC_DATA_KEY: ${{ secrets.PTDOC_DATA_KEY }}
           # vectorman 为 native 部署：SSH 走密钥，DEPLOY_PASSWORD 仅作为 sudo 密码复用
           VECTORMAN_SUDO_PASS: ${{ secrets.DEPLOY_PASSWORD }}
+          VECTORMAN_AGENT_TOKEN: ${{ secrets.VECTORMAN_AGENT_TOKEN }}
           # lems 七牛云 AK/SK（其余 QINIU_* 为明文，放 apps/lems/.env）
           QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
           QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
