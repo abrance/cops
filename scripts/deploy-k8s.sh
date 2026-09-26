@@ -113,6 +113,84 @@ if ! kubectl apply -f "${RENDERED}"; then
   dump_failure
   exit 1
 fi
+# ── checksum 注解 ────────────────────────────────────────────────────────────
+#
+# 问题：kubectl apply 一个改了内容的 ConfigMap，**不会**重启引用它的 Pod。
+# kubelet 会把新内容同步进已挂载的卷（几十秒后），但进程不会重新读配置——
+# 于是「部署成功」了，跑的却还是旧配置。这类漂移在 health 探测里看不出来。
+#
+# 做法：把 Deployment 引用的 ConfigMap 内容哈希后写进 podTemplate.annotations。
+# 内容变 → 注解变 → podTemplate 变 → Deployment 自动滚动新 Pod。
+# 注解值不变时不触发滚动，所以幂等。
+#
+# 实现要点（都是实测定的）：
+#   - 用 `kubectl -o jsonpath={.data}` 整块取内容再 sha256，**不解析 JSON 文本**。
+#     jsonpath 输出键序稳定（实测多次一致），且不受 `-o json` 缩进/格式影响；
+#     awk/sed 解析 JSON 会栽在 4 空格缩进与 metadata 里同名键的误匹配上。
+#   - 只用目标主机一定有的东西：kubectl / awk / grep / sha256sum。
+#     k3s 主机没有 jq，也不保证有 python3。
+#   - 只处理 rendered.yaml 里本单元声明的 ConfigMap，绝不碰别的单元的。
+#
+# 已知限制：只覆盖 Deployment → ConfigMap 的直接引用；无 ConfigMap 的单元
+# （如 model-ocr）整段 no-op。
+if kubectl -n "${NAMESPACE}" get configmap >/dev/null 2>&1; then
+  CHECKSUM_ANNOTATION="cops.vectorman.cn/configmap-checksum"
+
+  # 本单元声明的 ConfigMap 名：kind 行之后的第一个 name 字段（按文档边界扫）
+  declared_cms="$(awk '
+    /^kind: ConfigMap[[:space:]]*$/ { want=1; next }
+    /^kind: / { want=0 }
+    want && /^  name: / { sub(/^  name: /, ""); print; want=0 }
+  ' "${RENDERED}" | sort -u)"
+
+  if [ -n "${declared_cms}" ]; then
+    log "为引用 ConfigMap 的 Deployment 注入 checksum 注解"
+
+    for object in ${K8S_ROLLOUT:-}; do
+      kind="${object%%/*}"
+      [ "${kind}" = "deployment" ] || continue
+      name="${object##*/}"
+
+      # 该 Deployment 引用的 ConfigMap：volumes[].configMap.name 与
+      # envFrom[].configMapRef.name。用 jsonpath 一次取两类，再去重。
+      refs="$(kubectl -n "${NAMESPACE}" get deploy "${name}" \
+        -o jsonpath='{.spec.template.spec.volumes[*].configMap.name}{"\n"}{.spec.template.spec.containers[*].envFrom[*].configMapRef.name}' \
+        2>/dev/null | tr ' ' '\n' | grep -v '^$' | sort -u || true)"
+
+      # 与本单元声明的求交集
+      mine=""
+      for cm in ${refs}; do
+        if printf '%s\n' "${declared_cms}" | grep -qx "${cm}"; then
+          mine="${mine} ${cm}"
+        fi
+      done
+      [ -n "${mine}" ] || continue
+
+      digest=""
+      for cm in ${mine}; do
+        # 读集群里的实际内容（不是 rendered.yaml 的文本）：对齐「此刻真实生效的东西」
+        body="$(kubectl -n "${NAMESPACE}" get configmap "${cm}" -o jsonpath='{.data}' 2>/dev/null || true)"
+        digest="${digest}${cm}=$(printf '%s' "${body}" | sha256sum | awk '{print $1}')\n"
+      done
+      checksum="$(printf '%s' "${digest}" | sha256sum | awk '{print $1}')"
+
+      # 读当前注解值。⚠️ jsonpath 里含点的 key 必须转义（\.），否则返回空，
+      # 会被误判成「未注入」而对每次都触发滚动。
+      current="$(kubectl -n "${NAMESPACE}" get deploy "${name}" \
+        -o "jsonpath={.spec.template.metadata.annotations.cops\.vectorman\.cn/configmap-checksum}" \
+        2>/dev/null || true)"
+
+      if [ "${current}" = "${checksum}" ]; then
+        log "  ${name}: checksum 未变（${checksum:0:12}…），不需要滚动"
+        continue
+      fi
+      log "  ${name}: checksum ${current:0:12}… → ${checksum:0:12}…"
+      # patch podTemplate 而不是 annotate deploy：只有改 podTemplate 才会滚动
+      kubectl -n "${NAMESPACE}" patch deploy "${name}" --type=merge \
+        -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"${CHECKSUM_ANNOTATION}\":\"${checksum}\"}}}}}" >/dev/null
+    done
+  fi
+fi
 
 for object in ${K8S_ROLLOUT:-}; do
   log "等待 ${object} 完成 rollout（最长 ${TIMEOUT}s）"

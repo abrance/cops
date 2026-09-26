@@ -243,7 +243,8 @@ apps/<name>/
 - **入口与证书**：容器不需要绑定宿主机回环端口；对外暴露用 `IngressRoute`，证书由 k3s 自带 Traefik 的 ACME 自动签发。**一条 IngressRoute 必须拆成两条**（`web` 跳转 + `websecure` 带 `tls.certResolver`），否则 80 端口和证书挑战都会 404，原因见 [cloud3.md](cloud3.md) 的坑清单。
 - **镜像源**：k3s 主机用 `ghcr.io` 直连，旧主机用 `ghcr.chenby.cn`。按主机的差异见 [knowledge.md](docs/knowledge.md) 第 6 节。
 - **单元互访**：k8s 用同一命名空间的 Service 名当主机名，不需要 `SHARED_NETWORKS`。
-- **状态数据**：用 PVC（`local-path`），不再是 Docker 命名卷。
+- **状态数据**：单节点用 `hostPath`（简单、免二次搬迁），多节点或需要迁移能力时换 PVC（`local-path`）。两者都是「删 Pod 不丢数据」。`apps/model-logcluster` 用 PVC，`apps/vectorman` 用 hostPath。
+- **ConfigMap 变更触发滚动**：`kubectl apply` 改 ConfigMap **不会**重启引用它的 Pod（kubelet 会同步文件内容，但进程不会重读配置——部署「成功」了却还跑旧配置，健康探测也看不出来）。`deploy-k8s.sh` 在 apply 后会把每个 Deployment 引用的 ConfigMap 内容哈希写进 **podTemplate 注解**（`cops.vectorman.cn/configmap-checksum`），内容变 → 注解变 → 自动滚动；内容不变则不滚动（幂等）。**只有本单元 `k8s.yaml` 里声明的 ConfigMap 参与计算**，不碰别的单元。无 ConfigMap 的单元完全 no-op。
 
 k8s 单元的 `app.conf` 字段：
 
@@ -257,7 +258,9 @@ PUBLIC_URL="https://ocr.xiaoyxq.top/healthz"   # 可选：再从公网探一次
 HEALTH_TIMEOUT=180
 ```
 
-参考实现见 `apps/model-ocr/` 与 `apps/model-logcluster/`（后者带 PVC）。
+`K8S_ROLLOUT` 多个对象是**串行**等待，总超时共享 `HEALTH_TIMEOUT`；多个 Deployment 的单元要相应调大超时。
+
+参考实现见 `apps/model-ocr/`、`apps/model-logcluster/`（带 PVC）与 `apps/vectorman/`（三个 Deployment + ConfigMap + NodePort + hostPath）。
 
 ## 本地校验
 
@@ -279,6 +282,7 @@ scripts/check-registries.sh apps/lems default
 
 # k8s 单元的渲染校验（未定义变量、残留 ${...}、缺 apiVersion/kind 都会失败）
 scripts/render-k8s.py apps/model-ocr > /dev/null
+scripts/render-k8s.py apps/vectorman > /dev/null
 
 # 主机侧部署脚本语法
 bash -n scripts/deploy.sh scripts/deploy-k8s.sh

@@ -1,7 +1,0 @@
-# gse-agent 期望配置（由 cops 下发，勿在云主机手改）
-#
-# gse-server 已关闭鉴权，token 留空（不将任何凭据提交到公开仓库）。
-server_addr = "127.0.0.1:7100"
-agent_id = "agent-1"
-token = ""
-heartbeat_interval_secs = 30
