@@ -240,6 +240,10 @@ jobs:
           # lems 七牛云 AK/SK（其余 QINIU_* 为明文，放 apps/lems/.env）
           QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
           QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
+          # model-agent（k8s）：provider api key 与入口密码；由 deploy-k8s.sh
+          # 变成 k8s Secret model-agent-secrets 注入容器
+          AGENT_PROVIDER_API_KEY: ${{ secrets.AGENT_PROVIDER_API_KEY }}
+          PI_WEB_PASSWORD: ${{ secrets.PI_WEB_PASSWORD }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
