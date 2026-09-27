@@ -117,8 +117,8 @@ dump_failure() {
 #   1. 必须在 kubectl apply 之前：Secret 不存在时 Pod 会卡在 CreateContainerConfigError。
 #   2. 声明了 SECRET_ENV 却没有密钥文件 → 直接失败，不带着空密钥上线。
 #   3. 幂等：内容没变就不动注解，避免每次部署都白滚动一次。
-#   4. patch podTemplate 而不是 annotate deploy：只有改 podTemplate 才会滚动 ——
-#      与下面 ConfigMap checksum 同一套道理（改了密钥但不重启，Pod 还跑旧值）。
+#   4. 滚动触发放在 kubectl apply **之后**（见下面的 checksum 段）：首次部署时
+#      Deployment 还不存在，提前 patch 会 NotFound 直接失败。
 if [ -n "${SECRET_ENV:-}" ]; then
   if [ ! -f "${SECRETS_FILE}" ]; then
     log "声明了 SECRET_ENV 但找不到密钥文件 ${SECRETS_FILE}"
@@ -132,27 +132,6 @@ if [ -n "${SECRET_ENV:-}" ]; then
     --from-env-file="${SECRETS_FILE}" \
     --dry-run=client -o yaml \
     | kubectl apply -f - >/dev/null
-
-  SECRET_ANNOTATION="cops.vectorman.cn/secret-checksum"
-  secret_digest="$(sha256sum "${SECRETS_FILE}" | awk '{print $1}')"
-
-  for object in ${K8S_ROLLOUT:-}; do
-    kind="${object%%/*}"
-    [ "${kind}" = "deployment" ] || continue
-    name="${object##*/}"
-
-    current="$(kubectl -n "${NAMESPACE}" get deploy "${name}" \
-      -o "jsonpath={.spec.template.metadata.annotations.cops\.vectorman\.cn/secret-checksum}" \
-      2>/dev/null || true)"
-
-    if [ "${current}" = "${secret_digest}" ]; then
-      log "  ${name}: 密钥未变（${secret_digest:0:12}…），不需要滚动"
-      continue
-    fi
-    log "  ${name}: 密钥变化 ${current:0:12}… → ${secret_digest:0:12}…"
-    kubectl -n "${NAMESPACE}" patch deploy "${name}" --type=merge \
-      -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"${SECRET_ANNOTATION}\":\"${secret_digest}\"}}}}}" >/dev/null
-  done
 fi
 
 log "应用期望状态到命名空间 ${NAMESPACE}"
@@ -238,6 +217,34 @@ if kubectl -n "${NAMESPACE}" get configmap >/dev/null 2>&1; then
         -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"${CHECKSUM_ANNOTATION}\":\"${checksum}\"}}}}}" >/dev/null
     done
   fi
+fi
+
+# ── Secret checksum 注解 ───────────────────────────────────────────────
+#
+# 与上面 ConfigMap 同一个道理，只是对象换成 Secret：**改了密钥但不重启，Pod 还跑旧值**。
+# 必须放在 kubectl apply 之后：首次部署时 Deployment 还没创建，提前 patch 会 NotFound
+# 直接被 set -e 带走（这个坑真实发生过，见 2026-09-27 的首次部署失败）。
+if [ -n "${SECRET_ENV:-}" ]; then
+  SECRET_ANNOTATION="cops.vectorman.cn/secret-checksum"
+  secret_digest="$(sha256sum "${SECRETS_FILE}" | awk '{print $1}')"
+
+  for object in ${K8S_ROLLOUT:-}; do
+    kind="${object%%/*}"
+    [ "${kind}" = "deployment" ] || continue
+    name="${object##*/}"
+
+    current="$(kubectl -n "${NAMESPACE}" get deploy "${name}" \
+      -o "jsonpath={.spec.template.metadata.annotations.cops\.vectorman\.cn/secret-checksum}" \
+      2>/dev/null || true)"
+
+    if [ "${current}" = "${secret_digest}" ]; then
+      log "  ${name}: 密钥未变（${secret_digest:0:12}…），不需要滚动"
+      continue
+    fi
+    log "  ${name}: 密钥变化 ${current:0:12}… → ${secret_digest:0:12}…"
+    kubectl -n "${NAMESPACE}" patch deploy "${name}" --type=merge \
+      -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"${SECRET_ANNOTATION}\":\"${secret_digest}\"}}}}}" >/dev/null
+  done
 fi
 
 for object in ${K8S_ROLLOUT:-}; do
