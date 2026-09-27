@@ -88,6 +88,8 @@
 | `DEPLOY_PORT` | 否 | SSH 端口，默认 `22` |
 | `DEPLOY_KNOWN_HOSTS` | 否 | 服务器 SSH 主机公钥，建议固定（不配置时用 `ssh-keyscan` 临时获取） |
 | `PTDOC_DATA_KEY` | 是 | `ptdoc` 运行期密钥，用于加解密七牛 SecretKey；部署时下发到 `/opt/cops/secrets/ptdoc.env` |
+| `AGENT_PROVIDER_API_KEY` | 是 | `model-agent` 的大模型 provider api key；下发到 `/opt/cops/secrets/model-agent.env`，再由部署脚本变成 k8s Secret 注入容器 |
+| `PI_WEB_PASSWORD` | 是 | `model-agent` 的平台入口密码（单密码，浏览器登录与 API Basic 认证共用） |
 
 主机凭据按**每台主机一组**配置，名字登记在 `hosts.yaml`，值在 `deploy.yml` 的 `env:` 段映射（GitHub 不支持按变量名动态读 secret）。当前两台：
 
@@ -243,6 +245,11 @@ apps/<name>/
 - **入口与证书**：容器不需要绑定宿主机回环端口；对外暴露用 `IngressRoute`，证书由 k3s 自带 Traefik 的 ACME 自动签发。**一条 IngressRoute 必须拆成两条**（`web` 跳转 + `websecure` 带 `tls.certResolver`），否则 80 端口和证书挑战都会 404，原因见 [cloud3.md](cloud3.md) 的坑清单。
 - **镜像源**：k3s 主机用 `ghcr.io` 直连，旧主机用 `ghcr.chenby.cn`。按主机的差异见 [knowledge.md](docs/knowledge.md) 第 6 节。
 - **单元互访**：k8s 用同一命名空间的 Service 名当主机名，不需要 `SHARED_NETWORKS`。
+- **运行期密钥**：compose 路径把 `/opt/cops/secrets/<app>.env` 当 `--env-file` 加载；k8s 没有这个概念，所以 `deploy-k8s.sh` 会**在 `kubectl apply` 之前**把该文件变成命名空间里的 Secret（名字固定为 `<APP_NAME>-secrets`），单元的 manifest 用 `envFrom.secretRef` 引用它。要点：
+  - 只有当单元的 `app.conf` 声明了 `SECRET_ENV` 时才做；声明了却没有密钥文件则直接失败（不带着空密钥上线）。
+  - apply 是幂等的：内容没变不动注解，不白滚动。
+  - 内容变了会把哈希写进 podTemplate 注解触发滚动——**改了密钥但不重启，Pod 还跑旧值**，与 ConfigMap checksum 是同一套道理。
+  - 密钥本身仍不进仓库：GitHub Secrets → `/opt/cops/secrets/<app>.env`（CI 全量覆盖，见下面「运行期密钥」）→ k8s Secret → 容器。
 - **状态数据**：单节点用 `hostPath`（简单、免二次搬迁），多节点或需要迁移能力时换 PVC（`local-path`）。两者都是「删 Pod 不丢数据」。`apps/model-logcluster` 用 PVC，`apps/vectorman` 用 hostPath。
 - **ConfigMap 变更触发滚动**：`kubectl apply` 改 ConfigMap **不会**重启引用它的 Pod（kubelet 会同步文件内容，但进程不会重读配置——部署「成功」了却还跑旧配置，健康探测也看不出来）。`deploy-k8s.sh` 在 apply 后会把每个 Deployment 引用的 ConfigMap 内容哈希写进 **podTemplate 注解**（`cops.vectorman.cn/configmap-checksum`），内容变 → 注解变 → 自动滚动；内容不变则不滚动（幂等）。**只有本单元 `k8s.yaml` 里声明的 ConfigMap 参与计算**，不碰别的单元。无 ConfigMap 的单元完全 no-op。
 
@@ -282,6 +289,7 @@ scripts/check-registries.sh apps/lems default
 
 # k8s 单元的渲染校验（未定义变量、残留 ${...}、缺 apiVersion/kind 都会失败）
 scripts/render-k8s.py apps/model-ocr > /dev/null
+scripts/render-k8s.py apps/model-agent > /dev/null
 scripts/render-k8s.py apps/vectorman > /dev/null
 
 # 主机侧部署脚本语法
