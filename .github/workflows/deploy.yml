@@ -244,6 +244,9 @@ jobs:
           # 变成 k8s Secret model-agent-secrets 注入容器
           AGENT_PROVIDER_API_KEY: ${{ secrets.AGENT_PROVIDER_API_KEY }}
           PI_WEB_PASSWORD: ${{ secrets.PI_WEB_PASSWORD }}
+          # omp-web（k8s）：provider api key 与主工作台共用同一个值（上面的 AGENT_PROVIDER_API_KEY）；
+          # 入口密码也复用主工作台的密码，只是变量名按 omp-web 的叫法映射一次
+          OMP_WEB_PASSWORD: ${{ secrets.PI_WEB_PASSWORD }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
