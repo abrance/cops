@@ -1,0 +1,159 @@
+# model-forecast 期望状态（k8s / k3s）
+#
+# 由 cops 部署流程执行：
+#   CI 侧 scripts/render-k8s.py 把本文件里的占位符按同级 .env 与 app.conf 渲染成 rendered.yaml
+#   → 同步到 cloud3 的 /opt/cops/apps/model-forecast/
+#   → scripts/deploy-k8s.sh 做 kubectl apply + rollout + 探活
+#
+# 单元约定见仓库根 README 的「k8s 部署模式」；环境细节见 docs/cloud3.md。
+#
+# 这个单元的形态：Deployment + Service + 两条 IngressRoute，**没有 PVC**——
+# 权重随镜像交付，服务本身无状态，滚动更新不会丢东西。
+# 注意：render-k8s.py 不解析 YAML 结构，**注释里也不能出现字面量占位符**。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+# 80 → 443 跳转中间件：命名空间级对象，本单元与其它单元各写一份完全相同的，
+# kubectl apply 幂等，这样不依赖单元部署顺序（全量部署不保证顺序）。
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: ${K8S_NAMESPACE}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-forecast
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: model-forecast
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: model-forecast
+  template:
+    metadata:
+      labels:
+        app: model-forecast
+    spec:
+      containers:
+        - name: model-forecast
+          image: ${MODEL_FORECAST_IMAGE}:${MODEL_FORECAST_IMAGE_TAG}
+          ports:
+            - containerPort: ${MODEL_FORECAST_PORT}
+          env:
+            # 鉴权口径：当前不启用（modelman 仓库 docs/design.md D16）。
+            # 要收敛时：.env 里填 AUTH_TOKEN，并在 app.conf 的 SECRET_ENV 声明它
+            # （k8s 侧需要把密钥以 Secret 形式下发，见 README「k8s 部署模式」）
+            - name: AUTH_TOKEN
+              value: "${AUTH_TOKEN}"
+            - name: MODEL_TIER
+              value: "${MODEL_FORECAST_MODEL_TIER}"
+            - name: DEVICE
+              value: "${MODEL_FORECAST_DEVICE}"
+            - name: INFER_THREADS
+              value: "${MODEL_FORECAST_INFER_THREADS}"
+            - name: PRELOAD
+              value: "${MODEL_FORECAST_PRELOAD}"
+            - name: VERIFY_WEIGHTS
+              value: "${MODEL_FORECAST_VERIFY_WEIGHTS}"
+            - name: MAX_CONTEXT
+              value: "${MODEL_FORECAST_MAX_CONTEXT}"
+            - name: MAX_HORIZON
+              value: "${MODEL_FORECAST_MAX_HORIZON}"
+            - name: MAX_SERIES
+              value: "${MODEL_FORECAST_MAX_SERIES}"
+            - name: MAX_BYTES
+              value: "${MODEL_FORECAST_MAX_BYTES}"
+            - name: MAX_CONCURRENCY
+              value: "${MODEL_FORECAST_MAX_CONCURRENCY}"
+            - name: QUEUE_TIMEOUT_SECS
+              value: "${MODEL_FORECAST_QUEUE_TIMEOUT_SECS}"
+            - name: LIMIT_CONCURRENCY
+              value: "${MODEL_FORECAST_LIMIT_CONCURRENCY}"
+            - name: LOG_LEVEL
+              value: "${MODEL_FORECAST_LOG_LEVEL}"
+          # 探 /readyz 而不是 /healthz：权重没常驻时进程仍在监听、/healthz 照样 200，
+          # 只有 /readyz 会 503。用 /healthz 会让部署在"容器健康但业务端点全 503"时判成功。
+          # 不配 livenessProbe：启动要读 1.32 GB 权重，重启解决不了加载失败，
+          # 只会把"权重有问题"变成"容器反复重启"（omp-web 的 367 次重启就是这么来的）。
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ${MODEL_FORECAST_PORT}
+            # 冷启动 = 拉镜像 + 校验 1.32 GB 权重的 sha256 + 加载模型；
+            # 暖盘实测加载 1.8 秒，冷盘按分钟算。探针失手只是继续等，不会重启容器。
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # request 显式写小：别的单元只写 limits，k8s 就把 request 默认成 limit，
+            # 于是 node 上 16 核已被 request 掉 14.22 核；这里按 limit 申请会 Pending。
+            requests:
+              cpu: "${MODEL_FORECAST_CPU_REQUEST}"
+              memory: ${MODEL_FORECAST_MEM_REQUEST}
+            limits:
+              cpu: "${MODEL_FORECAST_CPU_LIMIT}"
+              # 实测常驻 1.5 GB、加载峰值 2.8 GB，低于 3Gi 会在加载阶段被 OOM 杀掉
+              memory: ${MODEL_FORECAST_MEM_LIMIT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-forecast
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: model-forecast
+spec:
+  selector:
+    app: model-forecast
+  ports:
+    - name: http
+      port: ${MODEL_FORECAST_PORT}
+      targetPort: ${MODEL_FORECAST_PORT}
+---
+# 公网入口：必须拆成两条 IngressRoute。Traefik v3 里若把 [web, websecure] 与
+# tls.certResolver 写在同一条上，只会生成 websecure 路由器：80 端口 404，
+# 而且 ACME 的 HTTP-01 挑战同样 404（见 docs/cloud3.md 坑清单）。
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: model-forecast
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: model-forecast
+          port: ${MODEL_FORECAST_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: model-forecast-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      services:
+        - name: model-forecast
+          port: ${MODEL_FORECAST_PORT}
+  tls:
+    certResolver: letsencrypt
