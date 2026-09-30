@@ -247,6 +247,13 @@ jobs:
           # omp-web（k8s）：provider api key 与主工作台共用同一个值（上面的 AGENT_PROVIDER_API_KEY）；
           # 入口密码也复用主工作台的密码，只是变量名按 omp-web 的叫法映射一次
           OMP_WEB_PASSWORD: ${{ secrets.PI_WEB_PASSWORD }}
+          # model-jev（k8s）：公网入口的 Bearer token。源 secret 名是 MODEL_TOKEN，
+          # 因 SECRET_ENV 里声明的变量名是容器侧要看到的 AUTH_TOKEN，所以这里做一次映射
+          # （与上面 OMP_WEB_PASSWORD 同一手法）。
+          # 它是本仓库第一个**必需**的运行期密钥：app.conf 里同时在 REQUIRED_ENV 与
+          # SECRET_ENV 声明，缺它时部署直接失败，而不是静默上线一个无鉴权的计算接口。
+          # 取值必须与调用方 pi-jev 的 TYPESAFE_API_KEY 一致。
+          AUTH_TOKEN: ${{ secrets.MODEL_TOKEN }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
