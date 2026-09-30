@@ -1,0 +1,169 @@
+# model-jev 期望状态（k8s / k3s）
+#
+# 由 cops 部署流程执行：
+#   CI 侧 scripts/render-k8s.py 把本文件里的占位符按同级 .env 与 app.conf 渲染成 rendered.yaml
+#   → 同步到 cloud3 的 /opt/cops/apps/model-jev/
+#   → scripts/deploy-k8s.sh 做 kubectl apply + rollout + 探活
+#
+# 单元约定见仓库根 README 的「k8s 部署模式」；环境细节见 docs/cloud3.md。
+#
+# 这个单元的形态：Deployment + Service + 两条 IngressRoute，**没有 PVC**——
+# 权重随镜像交付，服务本身无状态，滚动更新不会丢东西。
+# 注意：render-k8s.py 不解析 YAML 结构，**注释里也不能出现字面量占位符**。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+# 80 → 443 跳转中间件：命名空间级对象，本单元与其它单元各写一份完全相同的，
+# kubectl apply 幂等，这样不依赖单元部署顺序（全量部署不保证顺序）。
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: ${K8S_NAMESPACE}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-jev
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: model-jev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: model-jev
+  template:
+    metadata:
+      labels:
+        app: model-jev
+    spec:
+      containers:
+        - name: model-jev
+          image: ${MODEL_JEV_IMAGE}:${MODEL_JEV_IMAGE_TAG}
+          ports:
+            - containerPort: ${MODEL_JEV_PORT}
+          # 运行期密钥：容器读的 AUTH_TOKEN 不在 .env 里。来源是 GitHub Secret
+          # MODEL_TOKEN（deploy.yml 里映射成 AUTH_TOKEN），CI 写到主机
+          # /opt/cops/secrets/model-jev.env，再由 deploy-k8s.sh 按 app.conf 的
+          # SECRET_ENV 生成 Secret 注入。
+          # Secret 不存在时 Pod 会卡在 CreateContainerConfigError，所以脚本把它放在
+          # kubectl apply 之前；密钥内容变化会写进 podTemplate 注解触发滚动。
+          #
+          # 为什么这个单元启用鉴权而其它单元不启用：/v1/systemone 是计算接口，
+          # 而调用方 pi-jev 恒定发送 Authorization: Bearer，启用对调用侧零改动
+          #（见 modelman 仓库 services/jev/README.md 与 docs/design.md D15–D17）。
+          envFrom:
+            - secretRef:
+                name: ${MODEL_JEV_SECRET_NAME}
+          env:
+            - name: MODEL_TIER
+              value: "${MODEL_JEV_MODEL_TIER}"
+            - name: DEVICE
+              value: "${MODEL_JEV_DEVICE}"
+            - name: INFER_THREADS
+              value: "${MODEL_JEV_INFER_THREADS}"
+            - name: PRELOAD
+              value: "${MODEL_JEV_PRELOAD}"
+            - name: MAX_LEN
+              value: "${MODEL_JEV_MAX_LEN}"
+            - name: HEAD_MAX_LEN
+              value: "${MODEL_JEV_HEAD_MAX_LEN}"
+            - name: MAX_STATE_CHARS
+              value: "${MODEL_JEV_MAX_STATE_CHARS}"
+            - name: MAX_QUESTIONS
+              value: "${MODEL_JEV_MAX_QUESTIONS}"
+            - name: MAX_OPTIONS
+              value: "${MODEL_JEV_MAX_OPTIONS}"
+            - name: MAX_BYTES
+              value: "${MODEL_JEV_MAX_BYTES}"
+            - name: MAX_CONCURRENCY
+              value: "${MODEL_JEV_MAX_CONCURRENCY}"
+            - name: QUEUE_TIMEOUT_SECS
+              value: "${MODEL_JEV_QUEUE_TIMEOUT_SECS}"
+            - name: LIMIT_CONCURRENCY
+              value: "${MODEL_JEV_LIMIT_CONCURRENCY}"
+            - name: LOG_LEVEL
+              value: "${MODEL_JEV_LOG_LEVEL}"
+          # 探 /readyz 而不是 /healthz：权重没常驻时进程仍在监听、/healthz 照样 200，
+          # 只有 /readyz 会 503。用 /healthz 会让部署在"容器健康但业务端点全 503"时判成功。
+          # 不配 livenessProbe：启动要读 678 MB 权重，重启解决不了加载失败，
+          # 只会把"权重有问题"变成"容器反复重启"。
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: ${MODEL_JEV_PORT}
+            # 冷启动 = 拉镜像（约 1.2 GB，含 torch 与权重）+ 加载权重（暖盘实测 9.7 秒）。
+            # 探针失手只是继续等，不会重启容器。
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # request 显式写小：别的单元只写 limits，k8s 就把 request 默认成 limit，
+            # 于是 node 上 16 核已被 request 掉十多个；这里按 limit 申请会 Pending。
+            requests:
+              cpu: "${MODEL_JEV_CPU_REQUEST}"
+              memory: ${MODEL_JEV_MEM_REQUEST}
+            limits:
+              cpu: "${MODEL_JEV_CPU_LIMIT}"
+              # 实测常驻 1.70 GB、加载峰值 2.30 GB，低于 3Gi 会在加载阶段被 OOM 杀掉
+              memory: ${MODEL_JEV_MEM_LIMIT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-jev
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: model-jev
+spec:
+  selector:
+    app: model-jev
+  ports:
+    - name: http
+      port: ${MODEL_JEV_PORT}
+      targetPort: ${MODEL_JEV_PORT}
+---
+# 公网入口：必须拆成两条 IngressRoute。Traefik v3 里若把 [web, websecure] 与
+# tls.certResolver 写在同一条上，只会生成 websecure 路由器：80 端口 404，
+# 而且 ACME 的 HTTP-01 挑战同样 404（见 docs/cloud3.md 坑清单）。
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: model-jev
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: model-jev
+          port: ${MODEL_JEV_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: model-jev-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      services:
+        - name: model-jev
+          port: ${MODEL_JEV_PORT}
+  tls:
+    certResolver: letsencrypt
