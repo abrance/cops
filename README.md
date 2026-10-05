@@ -30,8 +30,9 @@
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | 无（systemd） | GitHub Releases 静态二进制包 | GSE 采集链路的 6 个组件，native 部署，数据保留在 `/opt/vectorman` |
+| `openbao` | `openbao` | `quay.io/openbao/openbao:2.7.1` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
-单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。上表所有单元当前都在 `default`。
+单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `model-ocr`/`model-agent`/`omp-web`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao` 在 `cloud3`，其余在 `default`。
 
 ## 已纳管环境组件
 
@@ -270,7 +271,31 @@ HEALTH_TIMEOUT=180
 
 `K8S_ROLLOUT` 多个对象是**串行**等待，总超时共享 `HEALTH_TIMEOUT`；多个 Deployment 的单元要相应调大超时。
 
-参考实现见 `apps/model-ocr/`、`apps/model-logcluster/`（带 PVC）与 `apps/vectorman/`（三个 Deployment + ConfigMap + NodePort + hostPath）。
+### helm chart 单元（第一条：`apps/openbao/`）
+
+不想手写上千行 StatefulSet 时，期望状态可以只放 chart 的 values，由 CI 渲染官方 chart：
+
+```text
+apps/<name>/
+├── app.conf      # DEPLOY_MODE=k8s + HELM_CHART/HELM_CHART_VERSION/HELM_CHART_REPO
+├── .env          # PUBLIC_HOST 等（k8s.yaml 的变量；OPENBAO_IMAGE 供 registry 守卫校验）
+├── k8s.yaml      # chart 表达不了的部分：Namespace + 两条 IngressRoute + Middleware
+└── values.yaml   # chart 的自定义 values（其余用 chart 默认值）
+```
+
+部署时 CI 在 runner 侧把 `render-k8s.py` 的输出与 `scripts/helm-render.sh` 的输出拼接成
+`rendered.yaml`（脚本内部 `helm repo add` + `helm template --version`，并过滤 chart 里带
+`helm.sh/hook` 注解的 test 资源），主机侧照旧 `kubectl apply`。升级 chart = 改
+`HELM_CHART_VERSION` + 更新 `values.yaml`，不用手改渲染产物。
+
+注意事项（都踩过）：
+- `render-k8s.py` 输出末尾**必须带换行**、`helm-render.sh` 输出以 `---` 开头，否则两份输出拼接处分隔符失效、两个文档粘成一个坏 YAML，ServiceAccount 之类的资源会静默缺失。
+- `kubectl rollout status` 不支持 `updateStrategyType: OnDelete` 的 StatefulSet（openbao chart 默认就是 OnDelete），所以这种单元**不要写 `K8S_ROLLOUT`**，靠 `K8S_HEALTH` / `PUBLIC_URL` 探真实 API 兜底。
+- chart 的 readiness 探针若依赖业务状态（如 `bao status` 在 sealed 时退出 2），会导致部署和每日全量重建永远红——可以在 values 里关掉 readiness，改为探恒 200 的接口（openbao 用 `/v1/sys/seal-status`）。
+
+参考实现：`apps/openbao/`。
+
+## 本地校验
 
 ## 本地校验
 
@@ -295,6 +320,9 @@ scripts/render-k8s.py apps/model-ocr > /dev/null
 scripts/render-k8s.py apps/model-agent > /dev/null
 scripts/render-k8s.py apps/omp-web > /dev/null
 scripts/render-k8s.py apps/vectorman > /dev/null
+
+# helm chart 单元额外校验（chart 可解析、values 合法、test 资源被过滤）
+scripts/helm-render.sh apps/openbao > /dev/null
 
 # 主机侧部署脚本语法
 bash -n scripts/deploy.sh scripts/deploy-k8s.sh

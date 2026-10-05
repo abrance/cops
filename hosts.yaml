@@ -35,8 +35,9 @@ hosts:
       known_hosts: DEPLOY_KNOWN_HOSTS
   cloud3:
     drivers: k8s
-    # cloud3 访问 ghcr.chenby.cn 会被 Cloudflare 拦成 403，只能用 ghcr.io 直连
-    registries: ghcr.io
+    # cloud3 访问 ghcr.chenby.cn 会被 Cloudflare 拦成 403，只能用 ghcr.io 直连；
+    # quay.io 用于 openbao 单元（官方镜像源，quay.io 直连实测可达）
+    registries: ghcr.io quay.io
     notes: k3s 单机，环境与人工改动见 docs/cloud3.md
     secrets:
       host: CLOUD3_DEPLOY_HOST

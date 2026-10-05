@@ -72,14 +72,20 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v4
 
+      - name: 安装 helm（helm chart 单元的渲染需要）
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.22.0
+
       - name: 校验单元定义
         run: |
           set -euo pipefail
           dir="${{ matrix.item.scope }}/${{ matrix.item.name }}"
           mode="${{ matrix.item.mode }}"
 
-          # 镜像源守卫：registry 按主机不同（旧主机 ghcr.chenby.cn，cloud3 只能 ghcr.io）。
-          # 谁把 *_IMAGE 的 registry 换回旧值，这里就红，不拖到部署时才发现拉不动镜像。
+          # 镜像源守卫：registry 按主机不同（旧主机 ghcr.chenby.cn，cloud3 只能 ghcr.io；
+          # openbao 额外用 quay.io）。谁把 *_IMAGE 的 registry 换回旧值，这里就红，
+          # 不拖到部署时才发现拉不动镜像。
           bash scripts/check-registries.sh "${dir}" "${{ matrix.item.target }}"
 
           case "${mode}" in
@@ -94,6 +100,13 @@ jobs:
             k8s)
               # k8s 单元：渲染即校验——未定义变量、残留 ${...}、缺 apiVersion/kind 都会失败
               python3 scripts/render-k8s.py "${dir}" > /dev/null
+              # helm chart 单元（app.conf 声明 HELM_CHART）：额外渲染 chart 校验，
+              # 保证 values.yaml 合法、HELM_CHART_VERSION 可解析（helm-render.sh 会
+              # 过滤 chart 里带 helm.sh/hook 注解的 test 资源，过滤规则两侧一致）
+              if grep -q '^HELM_CHART=' "${dir}/app.conf" 2>/dev/null; then
+                test -f "${dir}/values.yaml"
+                bash scripts/helm-render.sh "${dir}" > /dev/null
+              fi
               echo "k8s 单元 ${dir} 渲染校验通过"
               ;;
             compose)
@@ -209,6 +222,11 @@ jobs:
 
           echo "目标主机: ${target}（${user}@${host}:${port}）"
 
+      - name: 安装 helm（helm chart 单元的渲染需要）
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.22.0
+
       - name: 渲染 k8s 期望状态
         if: matrix.item.mode == 'k8s'
         run: |
@@ -216,6 +234,11 @@ jobs:
           dir="${{ matrix.item.scope }}/${{ matrix.item.name }}"
           # 渲染放 runner 侧：目标主机不需要 python/gettext，渲染错误也不会拖到集群里才发现
           python3 scripts/render-k8s.py "${dir}" > "${dir}/rendered.yaml"
+          # helm chart 单元：把 chart 渲染结果追加进同一份 rendered.yaml
+          # （app.conf 声明 HELM_CHART 时，期望状态 = 本目录 k8s.yaml + values.yaml 的 chart）
+          if grep -q '^HELM_CHART=' "${dir}/app.conf" 2>/dev/null; then
+            bash scripts/helm-render.sh "${dir}" >> "${dir}/rendered.yaml"
+          fi
           echo "已渲染 ${dir}/rendered.yaml（$(grep -c '^kind:' "${dir}/rendered.yaml") 个资源）"
 
       - name: 同步期望状态文件到云主机

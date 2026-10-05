@@ -1,0 +1,35 @@
+# OpenBao 官方 Helm chart 的自定义 values（chart: openbao/openbao，见 app.conf 的
+# HELM_CHART / HELM_CHART_VERSION / HELM_CHART_REPO）。
+#
+# 部署方式：本单元走仓库的 k8s 流程，但期望状态不是手写 k8s.yaml —— CI 在 runner
+# 侧先跑 scripts/render-k8s.py（渲染 k8s.yaml 里的 ${VAR}），再 helm template 本文件
+# 渲染 chart，两份输出拼成 rendered.yaml 同步到 cloud3 后 kubectl apply。
+# 升级 chart = 改 HELM_CHART_VERSION + 更新本文件，重跑部署即可，不用手改上千行
+# StatefulSet。未写出的配置全部用 chart 默认值（standalone 单副本 / pebbledb /
+# UI 开启 / tlsDisable，TLS 由 Traefik 终止）。
+#
+# 与默认值的差异及原因：
+#   - injector.enabled=false：chart 默认会装一个 vault-k8s 注入器（mutating
+#     webhook + 一堆 RBAC），个人单机用不到，关掉更干净。
+#   - server.ingress.enabled=false：chart 的 ingress 生成标准 k8s Ingress，
+#     接不上仓库这套 Traefik ACME（双 IngressRoute 套路，见 docs/cloud3.md）。
+#     公网入口由本单元 k8s.yaml 里的两条 IngressRoute 负责。
+#   - server.readinessProbe.enabled=false：chart 默认的 readiness 是 `bao status`
+#     exec 探针，命令在 sealed 时会 exit 2 → Pod NotReady。而 init/unseal 是人工
+#     一次性动作，首次部署与每次 Pod 重启后（重建后会自动重封）都会 sealed，
+#     开着它会让首次部署和每日全量重建的 rollout 永远红。改为关闭 readiness、
+#     用 deploy-k8s.sh 的 K8S_HEALTH / PUBLIC_URL 探 /v1/sys/seal-status
+#     （sealed 与否都返回 200，只证明 API 活着）；解封状态由人工维护。
+#   - server.dataStorage.storageClass=local-path：cloud3 唯一的 storageclass，
+#     显式写出来避免依赖「默认」语义。
+global:
+  namespace: openbao
+injector:
+  enabled: false
+server:
+  ingress:
+    enabled: false
+  dataStorage:
+    storageClass: local-path
+  readinessProbe:
+    enabled: false

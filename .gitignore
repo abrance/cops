@@ -2,5 +2,8 @@
 *.local
 .DS_Store
 
+# k8s 单元渲染产物（由 CI 在 runner 侧生成，不入库）
+rendered.yaml
+
 # 服务器本地密钥目录不会被同步；此处仅作提示
 secrets/
