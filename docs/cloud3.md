@@ -88,10 +88,33 @@ esac
 | `kube-system/HelmChartConfig traefik` | 上面的 ACME + persistence 配置 |
 | `kube-system/pvc traefik` | 存 `acme.json` |
 | `cops/` 命名空间 | 从旧主机迁入的单元，全部由 CI 部署（见第八节）：`model-ocr`（Deployment+Service+2×IngressRoute，无状态）、`model-logcluster`（同上 + PVC `model-logcluster-state` 2Gi）、共享 `Middleware redirect-https` |
+| `openbao/` 命名空间 | OpenBao 密钥管理，仓库第一个 helm chart 单元（期望状态 = `apps/openbao/values.yaml` 渲染官方 chart + `k8s.yaml`，CI 全自动，见 README「helm chart 单元」）；对象：StatefulSet `openbao`（OnDelete 策略）+ 内置 PVC `data-openbao-openbao-0` 10Gi + ConfigMap/ServiceAccount/ClusterRoleBinding + 2×IngressRoute + `Middleware redirect-https`；入口 `https://bao.xiaoyxq.top`，UI 在 `/ui/` |
 | `demo/`（whoami deploy+svc、`IngressRoute whoami-http`/`whoami-tls`、`Middleware redirect-https`） | **临时验证用**，可作为新服务模板；不要了就 `kubectl delete ns demo` |
 | `186.244.201.55.sslip.io` 的证书 | 已签发成功，作为端到端验证证据 |
 
 新增服务的标准三步：DNS 加 A 记录指向 `186.244.201.55` → 确认解析生效 → 照抄 demo 的两条 IngressRoute（换 Host）。**顺序不能反**，反了就是签发 404 失败，会撞 Let's Encrypt 限流（同域名每小时 5 次失败 / 每周 5 张重复证书）。
+
+### OpenBao 特化：初始化解封与日常 Unseal
+
+`apps/openbao`（CI 管理）只保证**部署**，`bao operator init` / `unseal` 是人工动作，原因是 root token 的产生不允许自动化。
+
+- **init 产物**：`/opt/cops/secrets/openbao.env`（权限 600，一个 JSON：`root_token`、`unseal_keys_b64`×5、`unseal_threshold`=3）；秘密文件不入库，但也**不要只依赖这一份**——建议把内容备份进密码管理器（首次 init 时的终端打印就是给你备份用的）。
+- **重新 unseal**（Pod 重建/版本升级/节点重启后必做，因为封箱状态在内存）：
+
+  ```sh
+  export KUBECONFIG=$HOME/.kube/config
+  python3 -c '
+  import json, subprocess
+  d = json.load(open("/opt/cops/secrets/openbao.env"))
+  for k in d["unseal_keys_b64"][:d["unseal_threshold"]]:
+      subprocess.run(["kubectl","-n","openbao","exec","openbao-0","--","bao","operator","unseal",k], check=True)
+  '
+  kubectl -n openbao exec openbao-0 -- bao status | grep Sealed   # 期望 false
+  ```
+
+- **为什么没有自动化 unseal**：cloud3 没有云 KMS，transit auto-unseal 需要再养一个 OpenBao，个人环境不值得；就按上面手工解，30 秒的事。
+- **为什么 readiness 探针是关的**：见 `apps/openbao/values.yaml` 的注释——chart 默认 readiness 是 `bao status`，sealed 时 exit 2 会让 Pod NotReady，开着它首次部署与每日全量重建永远红。服务可用性由 CI 的 `K8S_HEALTH`/`PUBLIC_URL` 探 `/v1/sys/seal-status`（两种状态都 200）兜底，CI 部署**不等待** unseal。
+- **改配置后应用**：chart 默认 `updateStrategyType: OnDelete`，改了 `values.yaml` 后 CI 会 apply 新期望状态，但 Pod 不会自动重建，需要 `kubectl -n openbao delete pod openbao-0` 触发（然后照上面重新 unseal）。
 
 ## 五、网络事实
 

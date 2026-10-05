@@ -1,0 +1,63 @@
+# openbao 期望状态（k8s / k3s）——只声明 chart 不覆盖的部分
+#
+# OpenBao 本体（StatefulSet / Service / PVC / RBAC / ConfigMap）由 CI 侧
+# `helm template` 渲染本目录 values.yaml 得到（见 app.conf 的 HELM_CHART* 与
+# .github/workflows/deploy.yml 的渲染步骤）；本文件只负责 chart 表达不了的：
+#   1. 命名空间 openbao（chart 的 global.namespace 只引用不创建）
+#   2. 公网入口：Traefik 双 IngressRoute + 80→443 跳转中间件
+#
+# 渲染产物 = render-k8s.py 输出（本文件）+ helm template 输出，两份拼成一个
+# rendered.yaml 由 deploy-k8s.sh kubectl apply，幂等。
+#
+# 入口约定见 docs/cloud3.md：一个子域名 = 两条 IngressRoute，`[web, websecure]` +
+# tls 写一条是错的（80 端口与 HTTP-01 挑战都会 404）。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+# 80 → 443 跳转中间件：命名空间级对象，与其它单元的完全一致，kubectl apply 幂等。
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: ${K8S_NAMESPACE}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openbao
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        # chart 生成的 Service：release 名 openbao → Service openbao（port 8200）
+        - name: openbao
+          port: 8200
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: openbao-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      services:
+        - name: openbao
+          port: 8200
+  tls:
+    certResolver: letsencrypt

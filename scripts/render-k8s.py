@@ -120,7 +120,12 @@ def main(argv: list[str]) -> int:
     unit_dir = Path(argv[1])
     if not unit_dir.is_dir():
         raise SystemExit(f"找不到单元目录 {unit_dir}")
-    sys.stdout.write(render(unit_dir))
+    rendered = render(unit_dir)
+    # 保证输出以换行结尾：helm chart 单元会把本输出与 helm-render.sh 的输出拼接
+    # （后者以 --- 开头），不换行会让分隔符粘在上一行末尾、多文档结构被破坏。
+    if not rendered.endswith("\n"):
+        rendered += "\n"
+    sys.stdout.write(rendered)
     return 0
 
 
