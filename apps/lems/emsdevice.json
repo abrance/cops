@@ -18,7 +18,7 @@
     "minSoc": 10,
     "maxSoc": 95,
     "chargeEfficiency": 95,
-    "socJitter": 2,
+    "socJitter": 0.05,
     "powerJitter": 1.5
   }
 }
