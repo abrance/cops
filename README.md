@@ -56,7 +56,7 @@
 │   │   ├── app.conf       # 应用元数据：健康检查容器 / 超时 / 探测地址 / 必需变量
 │   │   ├── compose.yaml   # 期望状态编排
 │   │   ├── .env           # 非敏感变量（随仓库提交）
-│   │   └── emsdevice.json # 服务配置文件
+│   │   └── emsdevice.json # Modbus 从站配置（含光伏/负载/关口电表/储能柜点表）
 │   └── ptdoc/
 │       ├── app.conf
 │       ├── compose.yaml

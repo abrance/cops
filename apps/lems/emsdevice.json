@@ -4,21 +4,87 @@
   "mock": {
     "mode": "live",
     "interval": "1s",
-    "status": 2,
-    "power": 5,
-    "soc": 80,
-    "generatedEnergy": 120,
-    "consumedEnergy": 150,
-    "maxChargePower": 50,
-    "maxDischargePower": 50,
-    "deviceControl": 1,
-    "targetPower": 5,
-    "powerCapacity": 100,
-    "energyCapacity": 200,
-    "minSoc": 10,
-    "maxSoc": 95,
-    "chargeEfficiency": 95,
     "socJitter": 0.05,
     "powerJitter": 1.5
-  }
+  },
+  "devices": [
+    {
+      "key": "ess",
+      "name": "储能柜（ess_demo_v1.0.0，holding 0xC8-0xD5）",
+      "points": [
+        { "addr": "0xC8", "key": "Status", "name": "设备状态字", "type": "int16", "value": 2 },
+        { "addr": "0xC9", "key": "Power", "name": "当前功率", "type": "int16", "scale": 0.1, "value": 5 },
+        { "addr": "0xCA", "key": "SOC", "name": "当前SOC", "type": "int16", "scale": 0.1, "value": 80 },
+        { "addr": "0xCB", "key": "GeneratedEnergy", "name": "累计放电量", "type": "int16", "scale": 0.1, "value": 120 },
+        { "addr": "0xCC", "key": "ConsumedEnergy", "name": "累计用电量", "type": "int16", "scale": 0.1, "value": 150 },
+        { "addr": "0xCD", "key": "MaxChargePower", "name": "最大允许充电功率", "type": "int16", "scale": 0.1, "value": 50, "writable": true },
+        { "addr": "0xCE", "key": "MaxDischargePower", "name": "最大允许放电功率", "type": "int16", "scale": 0.1, "value": 50, "writable": true },
+        { "addr": "0xCF", "key": "DeviceControl", "name": "设备状态控制", "type": "int16", "value": 1, "writable": true },
+        { "addr": "0xD0", "key": "TargetPower", "name": "目标功率设置", "type": "int16", "scale": 0.1, "value": 5, "writable": true },
+        { "addr": "0xD1", "key": "PowerCapacity", "name": "功率容量", "type": "int16", "scale": 0.1, "value": 100 },
+        { "addr": "0xD2", "key": "EnergyCapacity", "name": "能量容量", "type": "int16", "scale": 0.1, "value": 200 },
+        { "addr": "0xD3", "key": "MinSOC", "name": "最小SOC", "type": "int16", "scale": 0.1, "value": 10, "writable": true },
+        { "addr": "0xD4", "key": "MaxSOC", "name": "最大SOC", "type": "int16", "scale": 0.1, "value": 95, "writable": true },
+        { "addr": "0xD5", "key": "ChargeEfficiency", "name": "充放电效率", "type": "int16", "scale": 0.01, "value": 95, "writable": true }
+      ]
+    },
+    {
+      "key": "pv",
+      "name": "光伏（pv_demo_v1.0.0，holding 0x64-0x6C）",
+      "points": [
+        { "addr": "0x64", "key": "Status", "name": "设备状态字", "type": "int16", "value": 3 },
+        { "addr": "0x65", "key": "Power", "name": "当前功率", "type": "int16", "scale": 0.1, "value": 60, "jitter": 3, "min": 0, "max": 120 },
+        { "addr": "0x66", "key": "GeneratedEnergy", "name": "累计发电量", "type": "uint16", "scale": 0.1, "value": 1200 },
+        { "addr": "0x67", "key": "OnOffState", "name": "开机状态", "type": "int16", "scale": 0.1, "value": 1 },
+        { "addr": "0x68", "key": "PowerLimit", "name": "功率限制值", "type": "int16", "scale": 0.1, "value": 100, "writable": true },
+        { "addr": "0x69", "key": "InstalledCapacity", "name": "装机容量", "type": "int16", "scale": 0.1, "value": 100 },
+        { "addr": "0x6A", "key": "Irradiance", "name": "当前辐照度", "type": "int16", "scale": 0.1, "value": 450, "jitter": 30, "min": 0, "max": 1200 },
+        { "addr": "0x6B", "key": "Temperature", "name": "当前温度", "type": "int16", "scale": 0.1, "value": 32, "jitter": 0.5, "min": -20, "max": 80 },
+        { "addr": "0x6C", "key": "Efficiency", "name": "转换效率", "type": "int16", "scale": 0.01, "value": 97 }
+      ]
+    },
+    {
+      "key": "load",
+      "name": "负载（load_demo_v1.0.0，holding 0x12C-0x131）",
+      "points": [
+        { "addr": "0x12C", "key": "Status", "name": "设备状态字", "type": "int16", "value": 1 },
+        { "addr": "0x12D", "key": "Power", "name": "当前功率", "type": "int16", "scale": 0.1, "value": 80, "jitter": 2, "min": 0, "max": 150 },
+        { "addr": "0x12E", "key": "Energy", "name": "累计用电量", "type": "uint16", "scale": 0.1, "value": 5600 },
+        { "addr": "0x12F", "key": "MaxLoad", "name": "最大负荷", "type": "int16", "scale": 0.1, "value": 120 },
+        { "addr": "0x130", "key": "PowerFactor", "name": "功率因数", "type": "int16", "scale": 0.01, "value": 0.95 },
+        { "addr": "0x131", "key": "LoadRate", "name": "当前负荷率", "type": "int16", "scale": 0.1, "value": 66.7, "jitter": 1, "min": 0, "max": 100 }
+      ]
+    },
+    {
+      "key": "ammeter",
+      "name": "关口电表（ammeter_demo_v1.0.0，holding 0x190-0x1A8）",
+      "points": [
+        { "addr": "0x190", "key": "Status", "name": "设备状态字", "type": "int16", "value": 1 },
+        { "addr": "0x191", "key": "PhaseAVoltage", "name": "A相电压", "type": "int16", "value": 230 },
+        { "addr": "0x192", "key": "PhaseBVoltage", "name": "B相电压", "type": "int16", "value": 230 },
+        { "addr": "0x193", "key": "PhaseCVoltage", "name": "C相电压", "type": "int16", "value": 230 },
+        { "addr": "0x194", "key": "PhaseACurrent", "name": "A相电流", "type": "int16", "value": 36 },
+        { "addr": "0x195", "key": "PhaseBCurrent", "name": "B相电流", "type": "int16", "value": 36 },
+        { "addr": "0x196", "key": "PhaseCCurrent", "name": "C相电流", "type": "int16", "value": 36 },
+        { "addr": "0x197", "key": "PhaseAActivePower", "name": "A相有功功率", "type": "int16", "scale": 0.1, "value": 8.3 },
+        { "addr": "0x198", "key": "PhaseBActivePower", "name": "B相有功功率", "type": "int16", "scale": 0.1, "value": 8.3 },
+        { "addr": "0x199", "key": "PhaseCActivePower", "name": "C相有功功率", "type": "int16", "scale": 0.1, "value": 8.4 },
+        { "addr": "0x19A", "key": "PhaseAReactivePower", "name": "A相无功功率", "type": "int16", "scale": 0.1, "value": 2.5 },
+        { "addr": "0x19B", "key": "PhaseBReactivePower", "name": "B相无功功率", "type": "int16", "scale": 0.1, "value": 2.5 },
+        { "addr": "0x19C", "key": "PhaseCReactivePower", "name": "C相无功功率", "type": "int16", "scale": 0.1, "value": 2.5 },
+        { "addr": "0x19D", "key": "PhaseAApparentPower", "name": "A相视在功率", "type": "int16", "scale": 0.1, "value": 8.7 },
+        { "addr": "0x19E", "key": "PhaseBApparentPower", "name": "B相视在功率", "type": "int16", "scale": 0.1, "value": 8.7 },
+        { "addr": "0x19F", "key": "PhaseCApparentPower", "name": "C相视在功率", "type": "int16", "scale": 0.1, "value": 8.8 },
+        { "addr": "0x1A0", "key": "TotalActivePower", "name": "总有功功率", "type": "int16", "scale": 0.1, "value": 25, "jitter": 0.5, "min": -200, "max": 400 },
+        { "addr": "0x1A1", "key": "TotalReactivePower", "name": "总无功功率", "type": "int16", "scale": 0.1, "value": 7.5 },
+        { "addr": "0x1A2", "key": "TotalApparentPower", "name": "总视在功率", "type": "int16", "scale": 0.1, "value": 26.1 },
+        { "addr": "0x1A3", "key": "ForwardActiveEnergy", "name": "正向有功电量", "type": "uint16", "scale": 0.01, "value": 500 },
+        { "addr": "0x1A4", "key": "ReverseActiveEnergy", "name": "反向有功电量", "type": "uint16", "scale": 0.01, "value": 300 },
+        { "addr": "0x1A5", "key": "Frequency", "name": "频率", "type": "int16", "scale": 0.01, "value": 50 },
+        { "addr": "0x1A6", "key": "PowerFactor", "name": "功率因数", "type": "int16", "scale": 0.0001, "value": 0.96 },
+        { "addr": "0x1A7", "key": "RatedLineVoltage", "name": "额定线电压", "type": "int16", "value": 400 },
+        { "addr": "0x1A8", "key": "RatedFrequency", "name": "额定频率", "type": "int16", "value": 50 }
+      ]
+    }
+  ]
 }
