@@ -255,6 +255,16 @@ spec:
               port: sql
             initialDelaySeconds: 5
             periodSeconds: 10
+          # 启动探针：dataserver 要打开 284MB 时序数据 + 回放 WAL，实测启动可以
+          # 超过 liveness 的 initialDelay(20s)+3×period(20s)=80s 窗口，会被 kubelet
+          # 反复 SIGKILL（exitCode 137、日志空白、看起来像 OOM）。
+          # 启动探针成功前 liveness/readiness 不跑；这里给 5 分钟预算。
+          startupProbe:
+            httpGet:
+              path: /health
+              port: sql
+            periodSeconds: 10
+            failureThreshold: 30
           livenessProbe:
             httpGet:
               path: /health
