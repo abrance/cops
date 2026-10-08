@@ -81,7 +81,7 @@
         { "addr": "0x1A3", "key": "ForwardActiveEnergy", "name": "正向有功电量", "type": "uint16", "scale": 0.01, "value": 500 },
         { "addr": "0x1A4", "key": "ReverseActiveEnergy", "name": "反向有功电量", "type": "uint16", "scale": 0.01, "value": 300 },
         { "addr": "0x1A5", "key": "Frequency", "name": "频率", "type": "int16", "scale": 0.01, "value": 50 },
-        { "addr": "0x1A6", "key": "PowerFactor", "name": "功率因数", "type": "int16", "scale": 0.0001, "value": 0.96 },
+        { "addr": "0x1A6", "key": "PowerFactor", "name": "功率因数", "type": "int16", "scale": 0.001, "value": 0.96 },
         { "addr": "0x1A7", "key": "RatedLineVoltage", "name": "额定线电压", "type": "int16", "value": 400 },
         { "addr": "0x1A8", "key": "RatedFrequency", "name": "额定频率", "type": "int16", "value": 50 }
       ]
