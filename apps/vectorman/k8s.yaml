@@ -176,10 +176,13 @@ data:
     ts_clean_interval_secs = 3600
     # tsink 内存与 WAL 上限（2026-10-08 dataserver OOMKilled 崩溃循环）：
     # 不设时 tsink 的预算就是 usize::MAX —— 启动时回放 WAL 会把整段 WAL 的
-    # 点一次性读成一个 Vec（实测 ~1.4GB），叠加 redb 缺省 1GiB 页缓存直接顶爆
-    # 2Gi 上限。内存预算只触发「封存块驱逐」（不拒写），WAL 上限满了才拒写。
-    ts_memory_limit_bytes = 805306368
-    ts_wal_size_limit_bytes = 134217728
+    # 点一次性读成一个 Vec（实测 ~1.4GB），叠加 redb 缺省 1GiB 页缓存直接顶爆上限。
+    # ⚠️ 预算必须高于 tsink 的「地板」：实测 768MiB 时每轮写入都报
+    #   `Memory budget exceeded: budget 805306368, required at least 974516021`
+    # → 写入全部 30s 超时、Agent 的缓冲永远排不空（drop oldest 刷屏）。
+    # 1.5GiB 在地板之上，仍能在 3Gi 容器上限内留下余量。
+    ts_memory_limit_bytes = 1610612736
+    ts_wal_size_limit_bytes = 268435456
     apm_agg_interval_secs = 60
     apm_retention_days_default = 3
     apm_max_bytes = 0
