@@ -1,0 +1,218 @@
+# minio 期望状态（k8s / k3s）
+#
+# 由 cops 部署流程执行：
+#   CI 侧 scripts/render-k8s.py 把本文件里的占位符按同级 .env 与 app.conf 渲染成 rendered.yaml
+#   → 同步到 cloud3 的 /opt/cops/environment/minio/
+#   → scripts/deploy-k8s.sh 先按 app.conf 的 SECRET_ENV 建好 Secret minio-secrets，
+#     再 kubectl apply + rollout + 探活
+#
+# 单元约定见仓库根 README 的「k8s 部署模式」；cloud3 环境细节见 docs/cloud3.md。
+#
+# 这个单元的特点：
+#   1. **有状态**，但数据不放在集群卷里，而是宿主机 hostPath（单节点 k3s，少一次 PVC 搬迁）；
+#   2. 三处配置是刻意与迁移前的 minio-test 保持一致的：镜像 tag、两个入口域名、root 用户名；
+#      本次只换命名空间与存储位置，把变更面压到最小。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+# 80 → 443 跳转中间件：命名空间级对象，本单元与其它单元各写一份完全相同的，
+# kubectl apply 幂等，这样不依赖单元部署顺序（全量部署不保证顺序）。
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: ${K8S_NAMESPACE}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: minio
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      # fsGroup 只对支持属主管理的卷生效（PVC 之类），对 hostPath **不生效**，
+      # 所以宿主机目录的属主靠下面的 initContainer 显式修，不能只靠这里。
+      securityContext:
+        fsGroup: ${MINIO_FS_UID}
+      initContainers:
+        # 为什么需要它：hostPath 目录由 kubelet 以 root 建（DirectoryOrCreate），
+        # 而 minio 以 uid 1001 运行、写不了 root 属主的目录；kubelet 又不会为 hostPath
+        # 应用 fsGroup。所以每次启动先用 root 把 /data 的属主修成运行用户（幂等、代价极小）。
+        - name: fix-hostpath-ownership
+          image: ${MINIO_IMAGE}:${MINIO_IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              chown -R ${MINIO_FS_UID}:${MINIO_FS_UID} /data
+              chmod 0750 /data
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: minio
+          image: ${MINIO_IMAGE}:${MINIO_IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          args:
+            - server
+            - /data
+            - --console-address
+            - ":${MINIO_CONSOLE_PORT}"
+          # root 账号：来自 CI 下发的 k8s Secret minio-secrets（键 MINIO_ROOT_USER /
+          # MINIO_ROOT_PASSWORD）。Secret 不存在时 Pod 会卡在 CreateContainerConfigError，
+          # 所以 deploy-k8s.sh 把它放在 kubectl apply 之前创建。
+          envFrom:
+            - secretRef:
+                name: ${MINIO_SECRET_NAME}
+          ports:
+            - name: api
+              containerPort: ${MINIO_API_PORT}
+            - name: console
+              containerPort: ${MINIO_CONSOLE_PORT}
+          # 探 /minio/health/live：免认证、不碰任何 bucket，只验证进程活着。
+          # 不用 /minio/health/cluster：单节点且无 bucket 时语义更绕（要磁盘多数派判定）。
+          readinessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: ${MINIO_API_PORT}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: ${MINIO_API_PORT}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: "${MINIO_CPU_LIMIT}"
+              memory: ${MINIO_MEM_LIMIT}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          hostPath:
+            # 目录在宿主机上，不在集群卷里：删 Pod、重建、回滚镜像都不动它。
+            # 换机器/多节点时要先把这个目录搬过去（见 docs/cloud3.md 的 MinIO 一节）。
+            path: ${HOSTPATH_DATA}
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: minio
+spec:
+  selector:
+    app: minio
+  ports:
+    - name: api
+      port: ${MINIO_API_PORT}
+      targetPort: ${MINIO_API_PORT}
+    - name: console
+      port: ${MINIO_CONSOLE_PORT}
+      targetPort: ${MINIO_CONSOLE_PORT}
+---
+# 公网入口：API 与控制台各两条（web 跳转 + websecure 带 tls）。
+# 必须拆成两条：Traefik v3 里若把 [web, websecure] 与 tls.certResolver 写在同一条上，
+# 只会生成 websecure 路由器——80 端口 404，且 ACME 的 HTTP-01 挑战同样 404
+# （见 docs/cloud3.md 第六节与坑清单）。
+#
+# 域名沿用迁移前的 sslip.io 域名，访问地址不变；控制台**保留公网入口**是当前的有意选择，
+# 已知代价：控制台登录用的就是 root 账号（见 app.conf 里关于口令复用的说明）。
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: minio-api
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_API_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: minio
+          port: ${MINIO_API_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: minio-api-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_API_HOST}`)
+      kind: Rule
+      services:
+        - name: minio
+          port: ${MINIO_API_PORT}
+  tls:
+    certResolver: letsencrypt
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: minio-console
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_CONSOLE_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: minio
+          port: ${MINIO_CONSOLE_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: minio-console-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_CONSOLE_HOST}`)
+      kind: Rule
+      services:
+        - name: minio
+          port: ${MINIO_CONSOLE_PORT}
+  tls:
+    certResolver: letsencrypt

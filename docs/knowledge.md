@@ -12,7 +12,7 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 
 例外只有两类，都必须在 `.env` 注释里说明理由：
 
-- 上游官方镜像直接引用其原始源（如 `environment/ptdoc-qdrant` 的 `docker.io/qdrant/qdrant`，云主机已配 Docker Hub 内网 mirror）。
+- 上游官方镜像直接引用其原始源（如 `environment/ptdoc-qdrant` 的 `docker.io/qdrant/qdrant`，云主机已配 Docker Hub 内网 mirror；cloud3 上的 `environment/minio`、`apps/vikunja` 与 `environment/mysql8` 同理，直连 `docker.io`）。
 - tag 形状以上游实际发布为准：上游可能不带 `v` 前缀（如 ptdoc 网关的 `1.0.6`），不要为了统一而改写成仓库里不存在的 tag。
 
 当前镜像地址由各部署单元目录下的 `.env` 文件直接声明，Compose 文件只负责把镜像名和版本 tag 拼接成最终引用。不要只修改文档示例而遗漏 `.env` 中的实际部署值。
@@ -28,6 +28,7 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 | `environment/ptdoc-qdrant` | `gateway` | `GATEWAY_IMAGE` + `GATEWAY_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc-qdrant-gateway:1.0.7` |
 | `apps/model-ocr` | `model-ocr` | `MODEL_OCR_IMAGE` + `MODEL_OCR_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-ocr:v0.1.3-6476ffb` |
 | `apps/model-logcluster` | `model-logcluster` | `MODEL_LOGCLUSTER_IMAGE` + `MODEL_LOGCLUSTER_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-logcluster:v0.1.1-4c4f4e1` |
+| `environment/minio` | `minio` | `MINIO_IMAGE` + `MINIO_IMAGE_TAG` | `docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5` |
 
 配置来源：
 
@@ -99,6 +100,10 @@ Compose 的 shell 环境变量优先级高于项目 `.env`，部署脚本还可�
 | --- | --- | --- | --- |
 | 旧云主机（compose 单元） | 正常 | 直连回源慢，会卡在 `Pulling fs layer` | 用 `ghcr.chenby.cn` |
 | cloud3（k3s，见 [cloud3.md](cloud3.md)） | `/v2/` → Cloudflare 403，拿不到 token | 7–8 MB/s，实测可匿名拉取 `abrance/modelman-ocr`、`abrance/modelman-logcluster` | 用 `ghcr.io`，**不要**套用旧主机的 mirror 约定 |
+
+cloud3 的 `docker.io` 与 `quay.io` 也能直连（docker.io 实测 6.9 MB/s，quay.io 用于 openbao 官方镜像）。
+因此 `hosts.yaml` 里 cloud3 的允许列表是 `ghcr.io quay.io docker.io`，而旧主机是
+`ghcr.chenby.cn docker.io`——两边的差异由 `scripts/check-registries.sh` 在 PR 阶段强制。
 
 所以：`apps/model-ocr` 与 `apps/model-logcluster` 迁到 cloud3 的 k8s 模式后，它们的 `.env` 里镜像地址改为 `ghcr.io/abrance/...`。两个镜像在 ghcr.io 上是公开包，**不需要** registry 凭据，也**不需要** imagePullSecret。
 

@@ -36,8 +36,10 @@ hosts:
   cloud3:
     drivers: k8s
     # cloud3 访问 ghcr.chenby.cn 会被 Cloudflare 拦成 403，只能用 ghcr.io 直连；
-    # quay.io 用于 openbao 单元（官方镜像源，quay.io 直连实测可达）
-    registries: ghcr.io quay.io
+    # quay.io 用于 openbao 单元（官方镜像源，quay.io 直连实测可达）；
+    # docker.io 用于 environment/minio（bitnamilegacy/minio）与 apps/vikunja（含 mysql8
+    # 单元的 mysql:8.4），cloud3 直连 docker.io 实测 6.9–7.9 MB/s，见 docs/cloud3.md 第五节
+    registries: ghcr.io quay.io docker.io
     notes: k3s 单机，环境与人工改动见 docs/cloud3.md
     secrets:
       host: CLOUD3_DEPLOY_HOST

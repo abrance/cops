@@ -277,6 +277,13 @@ jobs:
           # SECRET_ENV 声明，缺它时部署直接失败，而不是静默上线一个无鉴权的计算接口。
           # 取值必须与调用方 pi-jev 的 TYPESAFE_API_KEY 一致。
           AUTH_TOKEN: ${{ secrets.MODEL_TOKEN }}
+          # minio（k8s）：对象存储的 root 账号。
+          #   用户名来自仓库 **variable**（不是 secret）：COMMON_ADMIN_USERNAME=xiaoy，
+          #   与迁移前 minio-secret 的 MINIO_ROOT_USER 相同。
+          #   口令来自 secret COMMON_SIMPLE_PASSWORD，并与 vikunja 的 S3 AK/SK 同值——
+          #   有意复用同一个值，避免 MinIO 与 vikunja 两侧凭据漂移导致的附件 403。
+          MINIO_ROOT_USER: ${{ vars.COMMON_ADMIN_USERNAME }}
+          MINIO_ROOT_PASSWORD: ${{ secrets.COMMON_SIMPLE_PASSWORD }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"

@@ -90,6 +90,7 @@ esac
 | `cops/` 命名空间 | 从旧主机迁入的单元，全部由 CI 部署（见第八节）：`model-ocr`（Deployment+Service+2×IngressRoute，无状态）、`model-logcluster`（同上 + PVC `model-logcluster-state` 2Gi）、共享 `Middleware redirect-https` |
 | `openbao/` 命名空间 | OpenBao 密钥管理，仓库第一个 helm chart 单元（期望状态 = `apps/openbao/values.yaml` 渲染官方 chart + `k8s.yaml`，CI 全自动，见 README「helm chart 单元」）；对象：StatefulSet `openbao`（OnDelete 策略）+ 内置 PVC `data-openbao-openbao-0` 10Gi + ConfigMap/ServiceAccount/ClusterRoleBinding + 2×IngressRoute + `Middleware redirect-https`；入口 `https://bao.xiaoyxq.top`，UI 在 `/ui/` |
 | `demo/`（whoami deploy+svc、`IngressRoute whoami-http`/`whoami-tls`、`Middleware redirect-https`） | **临时验证用**，可作为新服务模板；不要了就 `kubectl delete ns demo` |
+| `minio/` 命名空间 | 对象存储单元 `environment/minio`（CI 部署）：StatefulSet `minio` + Service + 4×IngressRoute（API 与控制台各 web/websecure 两条）+ `Middleware redirect-https`；数据在宿主机 `/opt/minio/data`（hostPath）。迁移前它是手工建的 `minio-test/`（PVC data-minio-0 + 两条手工 IngressRoute），搬迁步骤见下一小节 |
 | `186.244.201.55.sslip.io` 的证书 | 已签发成功，作为端到端验证证据 |
 
 新增服务的标准三步：DNS 加 A 记录指向 `186.244.201.55` → 确认解析生效 → 照抄 demo 的两条 IngressRoute（换 Host）。**顺序不能反**，反了就是签发 404 失败，会撞 Let's Encrypt 限流（同域名每小时 5 次失败 / 每周 5 张重复证书）。
@@ -115,6 +116,58 @@ esac
 - **为什么没有自动化 unseal**：cloud3 没有云 KMS，transit auto-unseal 需要再养一个 OpenBao，个人环境不值得；就按上面手工解，30 秒的事。
 - **为什么 readiness 探针是关的**：见 `apps/openbao/values.yaml` 的注释——chart 默认 readiness 是 `bao status`，sealed 时 exit 2 会让 Pod NotReady，开着它首次部署与每日全量重建永远红。服务可用性由 CI 的 `K8S_HEALTH`/`PUBLIC_URL` 探 `/v1/sys/seal-status`（两种状态都 200）兜底，CI 部署**不等待** unseal。
 - **改配置后应用**：chart 默认 `updateStrategyType: OnDelete`，改了 `values.yaml` 后 CI 会 apply 新期望状态，但 Pod 不会自动重建，需要 `kubectl -n openbao delete pod openbao-0` 触发（然后照上面重新 unseal）。
+
+### MinIO 特化：从 `minio-test` 迁入 `minio`（PVC → hostPath）
+
+迁移前 MinIO 是手工部署的：ns `minio-test`、PVC `data-minio-0`（5Gi local-path）、
+Secret `minio-secret`、两条只带 `websecure` 的 IngressRoute。纳入 cops 后由
+`environment/minio` 管理，命名空间改为 `minio`、数据改为宿主机 `/opt/minio/data`。
+
+顺序上**必须先处理路由冲突，再合入单元格**：新旧两套 IngressRoute 的 Host 完全相同
+（`minio.186.244.201.55.sslip.io` 与 `minio-console.186.244.201.55.sslip.io`），两边
+同时存在时 Traefik 的两个路由器规则优先级相等，请求会随机落到其中一边——新实例还没
+同步对象，就会出现间歇性 404。建议按下列顺序执行：
+
+1. 准备好 hostPath 目录（属主交给 k8s.yaml 的 initContainer 修，为了看不到错误先手动建也可）：
+
+   ```bash
+   sudo mkdir -p /opt/minio/data && sudo chown 1001:1001 /opt/minio/data
+   ```
+
+2. 删掉旧的两条 IngressRoute（公网 API/控制台短暂不可用，**集群内部访问不受影响**，
+   vikunja 走 Service DNS 而不是公网入口）：
+
+   ```bash
+   kubectl -n minio-test delete ingressroute minio-api minio-console
+   ```
+
+3. 合入 `environment/minio` 单元格（PR1）→ CI 建出 ns `minio` 并拉起新实例。
+   新实例起来后是**空库**，vikunja 此刻还指着旧的 `minio-test`，附件仍可读。
+
+4. 在新 Pod 里把旧实例的每个 bucket 同步过来（`mc mirror` 会按需建目标 bucket）。
+   在同一个集群里可以直接用 Service DNS 访问旧实例，不需要经过公网：
+
+   ```bash
+   kubectl -n minio exec minio-0 -- sh -c '
+     mc alias set old http://minio.minio-test.svc.cluster.local:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+     mc ls old
+     for b in $(mc ls old | awk "{print \$NF}" | tr -d /); do mc mirror --preserve old/$b local/$b; done
+     mc ls local'
+   ```
+
+   同步后逐桶核对对象数与总量（`mc du old/<bucket>` 对 `mc du local/<bucket>`），
+   并保留一份对象清单文本（`mc ls --recursive` 输出）作为回滚凭据。
+
+5. 把 vikunja 的 S3 endpoint 从 `http://minio.minio-test.svc.cluster.local:9000` 改成
+   `http://minio.minio.svc.cluster.local:9000`（属于 PR2 的内容），重启后验一次附件下载。
+
+6. 确认无误后再删旧资源：先 `kubectl -n minio-test get all` 留一份快照，再
+   `kubectl delete ns minio-test`。`minio-secret` 随命名空间一起消失，这也是
+   root 凭据必须同时进 GitHub Secrets 的原因（否则下次重建就找不回凭据）。
+
+已知代价（有意接受）：控制台入口仍对公网开放，且登录用的就是 root 账号；root 口令与
+vikunja 的 S3 AK/SK 同值（避免两侧漂移）。若要收紧，可去掉控制台的 IngressRoute 改用
+`kubectl port-forward`，或给它加 Traefik basicauth 中间件。
 
 ## 五、网络事实
 
