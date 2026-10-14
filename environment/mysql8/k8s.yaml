@@ -1,0 +1,133 @@
+# mysql8 期望状态（k8s / k3s）
+#
+# 由 cops 部署流程执行：
+#   CI 侧 scripts/render-k8s.py 把本文件里的占位符按同级 .env 与 app.conf 渲染成 rendered.yaml
+#   → 同步到 cloud3 的 /opt/cops/environment/mysql8/
+#   → scripts/deploy-k8s.sh 先按 app.conf 的 SECRET_ENV 建好 Secret mysql8-secrets，
+#     再 kubectl apply + 等 rollout
+#
+# 单元约定见仓库根 README 的「k8s 部署模式」；环境细节见 docs/cloud3.md。
+#
+# 这个单元的特点：
+#   1. 是**通用**组件（不属于单个应用）：只跑 root 账号，库与账号由使用方创建；
+#   2. 数据在宿主机 hostPath，不在集群卷里（单节点 k3s，少一次 PVC 搬迁）；
+#   3. 没有 HTTP 接口，所以 app.conf 里没有 K8S_HEALTH（详见那里的注释）。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: mysql
+spec:
+  # Service 名固定为 mysql：应用的连接串写 mysql.mysql8.svc.cluster.local:3306，
+  # 与迁移前手工部署时的 mysql.vikunja.svc 只差命名空间，调用方改动最小。
+  serviceName: mysql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      securityContext:
+        fsGroup: ${MYSQL_FS_UID}
+      initContainers:
+        # 为什么需要它：hostPath 目录由 kubelet 以 root 建（DirectoryOrCreate），
+        # 而 mysqld 以 uid 999 运行、写不了 root 属主的目录；kubelet 又不会为 hostPath
+        # 应用 fsGroup。所以每次启动先用 root 把数据目录的属主修成运行用户（幂等、代价极小）。
+        - name: fix-hostpath-ownership
+          image: ${MYSQL_IMAGE}:${MYSQL_IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              chown -R ${MYSQL_FS_UID}:${MYSQL_FS_UID} /var/lib/mysql
+              chmod 0750 /var/lib/mysql
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+      containers:
+        - name: mysql
+          image: ${MYSQL_IMAGE}:${MYSQL_IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          args:
+            - --character-set-server=utf8mb4
+            - --collation-server=utf8mb4_unicode_ci
+          # 只注入 root 口令：不设 MYSQL_DATABASE / MYSQL_USER，避免把具体应用写死进
+          # 通用组件，也避免「只在空 datadir 首启生效」这种隐性行为。
+          envFrom:
+            - secretRef:
+                name: ${MYSQL_SECRET_NAME}
+          ports:
+            - name: mysql
+              containerPort: ${MYSQL_PORT}
+          # readinessProbe：真的连一次数据库（mysqladmin ping），而不是只探端口。
+          # 空 datadir 首次启动要跑 initialize，initialDelaySeconds 给足。
+          readinessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          # livenessProbe 探同一个命令：mysqld 挂死时重启恢复。
+          # 阈值放得很宽（连续 30 次、每 30 秒一次 = 15 分钟）是刻意的：单节点上
+          # 重启容器救不了「磁盘满了」这类问题，反而会把可读的现场一起弄丢。
+          livenessProbe:
+            exec:
+              command:
+                - bash
+                - -c
+                - mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "${MYSQL_CPU_LIMIT}"
+              memory: ${MYSQL_MEM_LIMIT}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: data
+          hostPath:
+            # 目录在宿主机上，不在集群卷里：删 Pod、重建、回滚镜像都不动它。
+            # 换机器/多节点时要先把这个目录搬过去（见 docs/cloud3.md 的 MySQL 一节）。
+            path: ${HOSTPATH_DATA}
+            type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: mysql
+spec:
+  selector:
+    app: mysql
+  ports:
+    - name: mysql
+      port: ${MYSQL_PORT}
+      targetPort: ${MYSQL_PORT}

@@ -91,6 +91,8 @@ esac
 | `openbao/` 命名空间 | OpenBao 密钥管理，仓库第一个 helm chart 单元（期望状态 = `apps/openbao/values.yaml` 渲染官方 chart + `k8s.yaml`，CI 全自动，见 README「helm chart 单元」）；对象：StatefulSet `openbao`（OnDelete 策略）+ 内置 PVC `data-openbao-openbao-0` 10Gi + ConfigMap/ServiceAccount/ClusterRoleBinding + 2×IngressRoute + `Middleware redirect-https`；入口 `https://bao.xiaoyxq.top`，UI 在 `/ui/` |
 | `demo/`（whoami deploy+svc、`IngressRoute whoami-http`/`whoami-tls`、`Middleware redirect-https`） | **临时验证用**，可作为新服务模板；不要了就 `kubectl delete ns demo` |
 | `minio/` 命名空间 | 对象存储单元 `environment/minio`（CI 部署）：StatefulSet `minio` + Service + 4×IngressRoute（API 与控制台各 web/websecure 两条）+ `Middleware redirect-https`；数据在宿主机 `/opt/minio/data`（hostPath）。迁移前它是手工建的 `minio-test/`（PVC data-minio-0 + 两条手工 IngressRoute），搬迁步骤见下一小节 |
+| `mysql8/` 命名空间 | 通用 MySQL 8 单元 `environment/mysql8`（CI 部署）：StatefulSet `mysql` + Service `mysql`；数据在宿主机 `/opt/mysql8/data`（hostPath），无 HTTP 接口。迁移前它是 vikunja 手工部署的 `vikunja/mysql`（PVC `data-mysql-0` + Secret `vikunja-secret`），搬迁步骤见下一小节 |
+| `vikunja/` 命名空间 | 待办/项目管理单元 `apps/vikunja`（CI 部署）：ConfigMap `vikunja-config` + Deployment + Service + 2×IngressRoute + `Middleware redirect-https`；入口 `https://vikunja.xiaoyxq.top`。**无状态**：附件在 `minio/`、数据在 `mysql8/` |
 | `186.244.201.55.sslip.io` 的证书 | 已签发成功，作为端到端验证证据 |
 
 新增服务的标准三步：DNS 加 A 记录指向 `186.244.201.55` → 确认解析生效 → 照抄 demo 的两条 IngressRoute（换 Host）。**顺序不能反**，反了就是签发 404 失败，会撞 Let's Encrypt 限流（同域名每小时 5 次失败 / 每周 5 张重复证书）。
@@ -169,6 +171,87 @@ Secret `minio-secret`、两条只带 `websecure` 的 IngressRoute。纳入 cops 
 vikunja 的 S3 AK/SK 同值（避免两侧漂移）。若要收紧，可去掉控制台的 IngressRoute 改用
 `kubectl port-forward`，或给它加 Traefik basicauth 中间件。
 
+### MySQL 与 vikunja 特化：从 `vikunja/` 的手工部署迁入 `environment/mysql8` 与 `apps/vikunja`
+
+迁移前 vikunja 与它的数据库都是手工部署的：ns `vikunja`、StatefulSet `mysql` + PVC
+`data-mysql-0`（2Gi local-path）、Secret `vikunja-secret`（DB 口令 / session 密钥 / S3 AK/SK）。
+纳入 cops 后变成两个单元：
+
+| 单元 | 命名空间 | 存储 | 说明 |
+| --- | --- | --- | --- |
+| `environment/mysql8` | `mysql8` | hostPath `/opt/mysql8/data` | **通用** MySQL 8，只跑 root 账号，库与账号由使用方创建；Service 名仍是 `mysql` |
+| `apps/vikunja` | `vikunja` | 无（无状态） | ConfigMap + Deployment + Service + 2×IngressRoute；附件在 `minio/` |
+
+**顺序陷阱（必须先看）**：CI 解析单元时 `apps/` 排在 `environment/` 之前。若直接合并 PR
+让 CI 一次性部署，vikunja 会先被滚动到新的 DB 地址，而那时 mysql8 要么还没起来、要么是空库——
+vikunja 启动会自动跑 migration，把空库建成新 schema，之后导入 dump 必然冲突。
+所以先手工起 mysql8 并导数据，再让 CI 切 vikunja 的连接串：
+
+1. 手工建 mysql8（等价于 CI 会做的事，后续 CI apply 幂等）：
+
+   ```bash
+   export KUBECONFIG=$HOME/.kube/config
+   cd /tmp && python3 -c '
+   import re
+   docs=[d for d in re.split(r"(?m)^---[ \t]*$", open("rendered.yaml").read()) if d.strip()]
+   kinds={"Namespace","StatefulSet","Service"}
+   sel=[d for d in docs if re.search(r"(?m)^kind: (\\S+)", d).group(1) in kinds]
+   open("mysql8.yaml","w").write("---\\n"+"\\n---\\n".join(sel))'
+   # Secret 按部署脚本的规则手工建一次（值取现有 vikunja 的 DB 口令，不落盘）
+   kubectl -n mysql8 create secret generic mysql8-secrets \
+     --from-literal=MYSQL_ROOT_PASSWORD="$DB_PASSWORD" --dry-run=client -o yaml | kubectl apply -f -
+   kubectl apply -f mysql8.yaml
+   kubectl -n mysql8 rollout status statefulset/mysql --timeout=300s
+   ```
+
+2. 冻结写入：`kubectl -n vikunja scale deploy/vikunja --replicas=0`
+3. 导旧库（沿用迁移到 cloud3 时验证过的手法）：
+
+   ```bash
+   kubectl -n vikunja exec mysql-0 -- mysqldump -uroot -p"$OLD_ROOT_PW" \
+     --single-transaction --routines --triggers --default-character-set=utf8mb4 vikunja > vikunja.sql
+   ```
+
+4. 在 mysql8 里建库建号（通用单元不预建任何库），再导入：
+
+   ```bash
+   kubectl -n mysql8 exec -i mysql-0 -- mysql -uroot -p"$DB_PASSWORD" <<'SQL'
+   CREATE DATABASE IF NOT EXISTS vikunja CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+   CREATE USER IF NOT EXISTS 'vikunja'@'%' IDENTIFIED BY '<与 SECRET_ENV 里 VIKUNJA_DATABASE_PASSWORD 同值>';
+   GRANT ALL PRIVILEGES ON vikunja.* TO 'vikunja'@'%'; FLUSH PRIVILEGES;
+   SQL
+   kubectl -n mysql8 exec -i mysql-0 -- mysql -uroot -p"$DB_PASSWORD" vikunja < vikunja.sql
+   ```
+
+5. 校验：`users` / `projects` / `tasks` / `files` / `labels` 等表行数与旧库逐张对齐，中文取
+   `hex(title)` 比对，口令哈希聚合值比对（老用户密码必须还能登录）。
+6. 合并 PR2 → CI 同时 apply 两个单元：mysql8 是幂等 apply，vikunja 切到
+   `mysql.mysql8.svc.cluster.local:3306` 与 `http://minio.minio.svc.cluster.local:9000`。
+7. 验收：`/api/v1/info` 返回 v2.7.0、老账号可登录、附件可下载（对象 key 是 `files/<附件 id>`）、
+   `deploy-k8s.sh` 的两道探活均通过。
+8. 留证后再删旧资源：`mysqldump` 的 SQL、对象清单（`mc ls -r`）、旧 PVC 快照，存云主机
+   `~/vikunja-backup-<日期>/`；确认后才 `kubectl -n vikunja delete sts mysql`（PVC 需显式删）、
+   `kubectl delete ns minio-test`。
+
+两点与 MinIO 一致的口径：
+
+- **凭据只存在 GitHub Secrets 里**（`COMMON_SIMPLE_PASSWORD` 与仓库 variable `COMMON_ADMIN_USERNAME`）。
+  删掉旧 ns 后本地的 `vikunja-secret` / `minio-secret` 一起消失，凭据若不入库就找不回来了。
+- 本次迁移**不动行为配置**：`VIKUNJA_SERVICE_ENABLEREGISTRATION` 保持 `true`（公网实例建议改 false，
+  但要单独一件事做），DNS 不动，镜像 tag 不动。
+
+### Vikunja 特化：日常改动与升级
+
+- 配置改 `apps/vikunja/k8s.yaml` 的 ConfigMap（非敏感）或 GitHub Secrets（DB 口令 / session 密钥 /
+  S3 凭据）；`deploy-k8s.sh` 会把 ConfigMap 与 Secret 的内容哈希写进 podTemplate 注解，
+  内容变才滚动，幂等。改了 `VIKUNJA_SERVICE_SECRET` 会让所有已登录 session 失效。
+- 升级镜像：改 `apps/vikunja/.env` 的 `VIKUNJA_IMAGE_TAG` 后合并。启动时会自动跑 DB migration，
+  **migration 不可回退**：回滚镜像不会回滚 schema，跨大版本升级前先留一份 `mysqldump`。
+- 附件：对象 key 带 `files/` 前缀（`files.basepath`），手工往 MinIO 里放对象时必须带前缀，
+  否则附件 404 且 `vikunja doctor` 也不会报错。
+- 自带 MCP server 在 `/api/v2/mcp`（streamable HTTP），AI 客户端用它建单/查单；
+  长期 token 在 vikunja 的「设置 → API Tokens」里签发，**不要**写进本仓库。
+
 ## 五、网络事实
 
 - `docker.io` 与 `ghcr.io` 都能直连：token/manifest/blob 全通，实测 6.9 / 7.9 MB/s，**不需要镜像加速器，也不需要旧云主机那套 `ghcr.chenby.cn` 替换**
@@ -199,6 +282,8 @@ vikunja 的 S3 AK/SK 同值（避免两侧漂移）。若要收紧，可去掉�
 | HTTP-01 挑战 404 / `invalid authorization: 403` | 见第三节第 6 条：路由必须拆两条 |
 | 改完 HelmChartConfig 立即签证书失败 | Traefik 滚动重启期间的挑战请求被旧 Pod 接走；等 `rollout status` 完成再试，或 `rollout restart` 重来 |
 | `visudo` 相关 | 自定义 sudo 规则放 `/etc/sudoers.d/`，文件名**不能带点**，权限 440，改完 `visudo -c` |
+| 新 Pod 一直 `Pending`，事件报 `Insufficient cpu`，但机器明明很闲 | k8s 在只写 `limits` 时会把 limits 复制成 requests，于是 limits 大的单元隐式占满调度额度（`apps/model-ocr` 的 8 核 vs 节点 16 核；实测节点 requests 达 99%，连 100m 的 `environment/mysql8` 都调度不上）。处理：给这类单元补显式 `requests`（只是调度保底，上限仍是 limits） |
+| 降低 requests 后单副本 Deployment 的滚动卡死 | 改了 requests 的那次部署会自锁：默认 `maxUnavailable=0` 要求新 Pod 先调度成功才删旧 Pod，而旧 Pod 还占着旧的调度额度 → 新 Pod `Pending`、`rollout status` 超时。处理：`kubectl -n <ns> delete pod <旧 Pod>` 手工打破（删掉即释放额度） |
 
 ## 八、接入 cops CD
 

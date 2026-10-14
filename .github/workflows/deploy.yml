@@ -284,6 +284,17 @@ jobs:
           #   有意复用同一个值，避免 MinIO 与 vikunja 两侧凭据漂移导致的附件 403。
           MINIO_ROOT_USER: ${{ vars.COMMON_ADMIN_USERNAME }}
           MINIO_ROOT_PASSWORD: ${{ secrets.COMMON_SIMPLE_PASSWORD }}
+          # mysql8（k8s）：通用 MySQL 8 的 root 口令。
+          # 与 minio 的 root 口令、vikunja 的 S3 AK/SK 同值——有意复用同一个 secret，
+          # 避免多份口令漂移；代价是同一个值覆盖多个组件。
+          MYSQL_ROOT_PASSWORD: ${{ secrets.COMMON_SIMPLE_PASSWORD }}
+          # vikunja（k8s）：DB 口令、session 签名密钥、S3 AK/SK。
+          #   DB 口令与 mysql8 的 root 口令同值（库与账号在 MySQL 侧按需建，见 docs/cloud3.md）；
+          #   S3 AK/SK 与 minio 的 root 账号同值（MinIO 没有独立的子账号体系）。
+          VIKUNJA_DATABASE_PASSWORD: ${{ secrets.COMMON_SIMPLE_PASSWORD }}
+          VIKUNJA_SERVICE_SECRET: ${{ secrets.COMMON_SIMPLE_PASSWORD }}
+          VIKUNJA_FILES_S3_ACCESSKEY: ${{ vars.COMMON_ADMIN_USERNAME }}
+          VIKUNJA_FILES_S3_SECRETKEY: ${{ secrets.COMMON_SIMPLE_PASSWORD }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"

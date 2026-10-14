@@ -30,9 +30,9 @@
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | 无（systemd） | GitHub Releases 静态二进制包 | GSE 采集链路的 6 个组件，native 部署，数据保留在 `/opt/vectorman` |
-| `openbao` | `openbao` | `quay.io/openbao/openbao:2.7.1` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
+| `vikunja` | `vikunja` | `docker.io/vikunja/vikunja:2.7.0` | 待办/项目管理（自托管），cloud3（k8s），入口 `https://vikunja.xiaoyxq.top`；**无状态**：附件在 `environment/minio`、数据在 `environment/mysql8`；自带 MCP server（`/api/v2/mcp`），供 AI 客户端直接建单/查单 | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
-单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `model-ocr`/`model-agent`/`omp-web`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio` 在 `cloud3`，其余在 `default`。
+单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `model-ocr`/`model-agent`/`omp-web`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio`/`mysql8`/`vikunja` 在 `cloud3`，其余在 `default`。
 
 ## 已纳管环境组件
 
@@ -40,6 +40,7 @@
 | --- | --- | --- | --- |
 | `ptdoc-qdrant` | `ptdoc-qdrant`、`ptdoc-qdrant-gateway` | `docker.io/qdrant/qdrant`、`ghcr.chenby.cn/abrance/ptdoc-qdrant-gateway` | ptdoc 的知识库：Qdrant 向量库 + 本地向量化网关；数据保留在 `/opt/ptdoc-qdrant`；`apps/ptdoc` 依赖它 |
 | `minio` | `minio` | `docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5` | 对象存储（S3 兼容）；cloud3（k8s），入口 `https://minio.186.244.201.55.sslip.io`（API）与 `https://minio-console.186.244.201.55.sslip.io`（控制台）；**有状态**，数据在宿主机 `/opt/minio/data`（hostPath）；`apps/vikunja` 的附件存在这里 |
+| `mysql8` | `mysql` | `docker.io/library/mysql:8.4` | **通用** MySQL 8（不属于单个应用）：只跑 root 账号，库与账号由使用方按需创建；cloud3（k8s）；**有状态**，数据在宿主机 `/opt/mysql8/data`（hostPath）；`apps/vikunja` 的库在这里 |
 
 环境组件的规则与 apps 一致，额外几条：
 
