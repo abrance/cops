@@ -80,6 +80,11 @@ spec:
           # 不配 livenessProbe：推理服务偶发的慢请求不该触发重启，
           # 出问题时由 readiness 摘流量 + 人工介入，比自动重启更好排查。
           resources:
+            # requests 必须显式写：只写 limits 时 k8s 会把 limits 当成 requests，
+            # 这个单元就会在 16 核的单节点上隐式占掉 8 核调度额度（详见 .env 里的说明）。
+            requests:
+              cpu: ${MODEL_OCR_CPU_REQUEST}
+              memory: ${MODEL_OCR_MEM_REQUEST}
             limits:
               cpu: "${MODEL_OCR_CPU_LIMIT}"
               memory: ${MODEL_OCR_MEM_LIMIT}
