@@ -282,6 +282,8 @@ vikunja 启动会自动跑 migration，把空库建成新 schema，之后导入 
 | HTTP-01 挑战 404 / `invalid authorization: 403` | 见第三节第 6 条：路由必须拆两条 |
 | 改完 HelmChartConfig 立即签证书失败 | Traefik 滚动重启期间的挑战请求被旧 Pod 接走；等 `rollout status` 完成再试，或 `rollout restart` 重来 |
 | `visudo` 相关 | 自定义 sudo 规则放 `/etc/sudoers.d/`，文件名**不能带点**，权限 440，改完 `visudo -c` |
+| 新 Pod 一直 `Pending`，事件报 `Insufficient cpu`，但机器明明很闲 | k8s 在只写 `limits` 时会把 limits 复制成 requests，于是 limits 大的单元隐式占满调度额度（`apps/model-ocr` 的 8 核 vs 节点 16 核；实测节点 requests 达 99%，连 100m 的 `environment/mysql8` 都调度不上）。处理：给这类单元补显式 `requests`（只是调度保底，上限仍是 limits） |
+| 降低 requests 后单副本 Deployment 的滚动卡死 | 改了 requests 的那次部署会自锁：默认 `maxUnavailable=0` 要求新 Pod 先调度成功才删旧 Pod，而旧 Pod 还占着旧的调度额度 → 新 Pod `Pending`、`rollout status` 超时。处理：`kubectl -n <ns> delete pod <旧 Pod>` 手工打破（删掉即释放额度） |
 
 ## 八、接入 cops CD
 
