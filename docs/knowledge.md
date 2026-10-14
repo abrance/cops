@@ -29,6 +29,8 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 | `apps/model-ocr` | `model-ocr` | `MODEL_OCR_IMAGE` + `MODEL_OCR_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-ocr:v0.1.3-6476ffb` |
 | `apps/model-logcluster` | `model-logcluster` | `MODEL_LOGCLUSTER_IMAGE` + `MODEL_LOGCLUSTER_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-logcluster:v0.1.1-4c4f4e1` |
 | `environment/minio` | `minio` | `MINIO_IMAGE` + `MINIO_IMAGE_TAG` | `docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5` |
+| `environment/mysql8` | `mysql` | `MYSQL_IMAGE` + `MYSQL_IMAGE_TAG` | `docker.io/library/mysql:8.4` |
+| `apps/vikunja` | `vikunja` | `VIKUNJA_IMAGE` + `VIKUNJA_IMAGE_TAG` | `docker.io/vikunja/vikunja:2.7.0` |
 
 配置来源：
 

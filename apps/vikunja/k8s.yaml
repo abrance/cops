@@ -1,0 +1,177 @@
+# vikunja 期望状态（k8s / k3s）
+#
+# 由 cops 部署流程执行：
+#   CI 侧 scripts/render-k8s.py 把本文件里的占位符按同级 .env 与 app.conf 渲染成 rendered.yaml
+#   → 同步到 cloud3 的 /opt/cops/apps/vikunja/
+#   → scripts/deploy-k8s.sh 先按 app.conf 的 SECRET_ENV 建好 Secret vikunja-secrets，
+#     再 kubectl apply + rollout + 探活
+#
+# 单元约定见仓库根 README 的「k8s 部署模式」；环境细节见 docs/cloud3.md。
+#
+# 这个单元的特点：
+#   1. **无状态**：附件在 environment/minio，数据在 environment/mysql8，本单元没有卷；
+#   2. 运行期密钥（DB 口令 / session 密钥 / S3 AK/SK）由 deploy-k8s.sh 变成 k8s Secret
+#      后注入，密钥不在这个文件里；
+#   3. 非敏感配置集中在一个 ConfigMap 里，改它不会自动重启 Pod——deploy-k8s.sh 会把
+#      ConfigMap 内容哈希写进 podTemplate 注解来触发滚动（见 README「k8s 部署模式」）。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+# 80 → 443 跳转中间件：命名空间级对象，本单元与其它单元各写一份完全相同的，
+# kubectl apply 幂等，这样不依赖单元部署顺序（全量部署不保证顺序）。
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: ${K8S_NAMESPACE}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+# 非敏感运行配置。只放「改了要重启」的进程配置；连接串的凭据部分在 Secret 里。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vikunja-config
+  namespace: ${K8S_NAMESPACE}
+data:
+  VIKUNJA_DATABASE_TYPE: "mysql"
+  VIKUNJA_DATABASE_HOST: "${VIKUNJA_DB_HOST}"
+  VIKUNJA_DATABASE_DATABASE: "${VIKUNJA_DB_NAME}"
+  VIKUNJA_DATABASE_USER: "${VIKUNJA_DB_USER}"
+  VIKUNJA_SERVICE_PUBLICURL: "${SERVICE_PUBLICURL}"
+  VIKUNJA_SERVICE_TIMEZONE: "Asia/Shanghai"
+  VIKUNJA_SERVICE_ENABLELINKSHARING: "true"
+  VIKUNJA_SERVICE_ENABLECALDAV: "true"
+  # 开放注册：迁移时**有意保持原值**（不扩大本次变更面）。公网实例建议改成 false，
+  # 要改就单独一个改动，别和迁移混在一起。
+  VIKUNJA_SERVICE_ENABLEREGISTRATION: "true"
+  # 取真实客户端 IP：trustedProxies 覆盖 k3s 的 Pod 网段与 Service 网段，
+  # 否则从 Traefik 过来的请求会被当成同一个来源。
+  VIKUNJA_SERVICE_IPEXTRACTIONMETHOD: "xff"
+  VIKUNJA_SERVICE_TRUSTEDPROXIES: "10.42.0.0/16,10.43.0.0/16"
+  VIKUNJA_LOG_DATABASE: "true"
+  # 附件走 S3（MinIO）：对象 key 带 files.basepath 前缀，即 files/<附件 id>，
+  # 手工迁移对象时漏掉这个前缀会导致附件 404 而 doctor 也发现不了。
+  VIKUNJA_FILES_TYPE: "s3"
+  VIKUNJA_FILES_S3_ENDPOINT: "${VIKUNJA_S3_ENDPOINT}"
+  VIKUNJA_FILES_S3_BUCKET: "${VIKUNJA_S3_BUCKET}"
+  VIKUNJA_FILES_S3_REGION: "${VIKUNJA_S3_REGION}"
+  VIKUNJA_FILES_S3_USEPATHSTYLE: "true"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vikunja
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: vikunja
+spec:
+  replicas: 1
+  # 单副本 + 启动时自动跑 DB migration：默认的 RollingUpdate 会让新旧两个 Pod
+  # 同时对着同一个库跑 migration，用 Recreate 保证同一时刻只有一个进程。
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vikunja
+  template:
+    metadata:
+      labels:
+        app: vikunja
+    spec:
+      securityContext:
+        runAsUser: ${VIKUNJA_FS_UID}
+        fsGroup: ${VIKUNJA_FS_UID}
+      containers:
+        - name: vikunja
+          image: ${VIKUNJA_IMAGE}:${VIKUNJA_IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          # 两个来源：非敏感配置（ConfigMap）+ 运行期密钥（Secret，由 deploy-k8s.sh
+          # 在 apply 之前创建；Secret 不存在时 Pod 会卡在 CreateContainerConfigError）。
+          envFrom:
+            - configMapRef:
+                name: vikunja-config
+            - secretRef:
+                name: ${VIKUNJA_SECRET_NAME}
+          ports:
+            - name: http
+              containerPort: ${VIKUNJA_PORT}
+          # 探 /api/v1/info：免登录，且能反映「进程活着 + 路由已挂载」。
+          # 不用 /health：那个接口不验证服务是否已连接 DB 与 S3。
+          readinessProbe:
+            httpGet:
+              path: /api/v1/info
+              port: ${VIKUNJA_PORT}
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v1/info
+              port: ${VIKUNJA_PORT}
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "${VIKUNJA_CPU_LIMIT}"
+              memory: ${VIKUNJA_MEM_LIMIT}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vikunja
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: vikunja
+spec:
+  selector:
+    app: vikunja
+  ports:
+    - name: http
+      port: ${VIKUNJA_PORT}
+      targetPort: ${VIKUNJA_PORT}
+---
+# 公网入口：必须拆成两条 IngressRoute。Traefik v3 里若把 [web, websecure] 与
+# tls.certResolver 写在同一条上，只会生成 websecure 路由器：80 端口 404，
+# 而且 ACME 的 HTTP-01 挑战同样 404（见 docs/cloud3.md 坑清单）。
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: vikunja-web
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: vikunja
+          port: ${VIKUNJA_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: vikunja-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      services:
+        - name: vikunja
+          port: ${VIKUNJA_PORT}
+  tls:
+    certResolver: letsencrypt
