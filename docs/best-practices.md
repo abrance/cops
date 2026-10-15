@@ -190,7 +190,28 @@ logging:
 
 **参考实现**：`environment/ptdoc-qdrant/`（Qdrant + 本地向量化网关，被 `apps/ptdoc` 依赖）。
 
-## 14. 不要做的事
+## 14. 有状态服务换存储/换命名空间：先拿“可验证的”恢复基线，再删源
+
+**做法**
+
+- 迁移前先导一份逻辑备份（数据库 `mysqldump --single-transaction --routines --triggers`），
+  并把它**恢复到临时库演练一次**：逐张表 `COUNT(*)` 对齐、中文取 `hex()` 比对、口令哈希聚合值比对。
+  演练完立即删临时库。
+- 对象存储同时留一份对象清单（`mc ls --recursive`），它比 datadir 副本更能证明“东西都在”。
+- 删旧 PVC / 旧命名空间**放在最后**，且删之前先留集群快照（`kubectl get all -o wide` 存文件）。
+- 基线统一放目标主机的 `/opt/cops/backup/<服务>-<日期>/`，在对应 `docs/` 里记下路径与 md5。
+- 有状态单元优先用 hostPath（单节点 k3s）：删 Pod、重建、回滚镜像都不动数据，也少一次 PVC 搬运。
+  但 hostPath **不在 k8s 的 fsGroup 管辖下**，容器非 root 运行时必须用 root initContainer 修属主，
+  否则 Pod 起不来（`environment/minio`、`environment/mysql8` 都是这个写法）。
+
+**原因**：旧 PVC 一删，hostPath 就是唯一副本；磁盘一坏、schema 一升错，只能靠 dump 重建。
+而**没演练过的 dump 等于没有 dump**——真的需要它的时候才发现不全，就来不及了。
+
+**教训（真实发生）**：2026-10-14 把 vikunja 的 MySQL 与 MinIO 从 PVC 搬到 hostPath 时，
+合完 PR 就直接删了旧 PVC 与旧命名空间，没有单独留迁移前的 dump（现存的只有更早一次搬迁留下的
+2.2.2 备份）。事后补了 2026-10-15 的基线，但“迁移前那一瞬”的退路已经没了。
+
+## 15. 不要做的事
 
 - 不要把密钥、token、密码写进 `apps/<服务>/.env` 或任何入库文件。
 - 不要在云主机上手工修改 `/opt/cops/apps/`、`/opt/cops/environment/` 下的文件。
