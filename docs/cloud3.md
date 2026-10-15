@@ -262,7 +262,10 @@ vikunja 启动会自动跑 migration，把空库建成新 schema，之后导入 
 | 数据库基线 | `/opt/cops/backup/vikunja-2026-10-15/vikunja-2.7.0-20261015.sql`（md5 `c86d23a94d92285fa13d8de9970a4659`） | 2026-10-15 迁移后立即导的逻辑备份，已做过一次恢复演练 |
 | 对象清单 | 同目录 `minio-objects-20261015.json` | `mc ls --recursive --json` 全量清单 |
 | 集群快照 | 同目录 `cluster-snapshot-20261015.txt`、`hostpath-du-20261015.txt` | 三个 ns 的对象列表与 hostPath 占用 |
-| 更早的库备份 | 云主机 `~/vikunja-backup/vikunja-2.2.2-20261013.sql` | 2026-10-13 从本机迁到 cloud3 时留的，**迁移到 hostPath 之前的那次搬迁没单独留 dump** |
+
+更早的备份（云主机 `~/vikunja-backup/vikunja-2.2.2-20261013.sql`，2026-10-13 从本机迁到
+cloud3 时留的）已按 2026-10-15 的决定清理，本目录这现在是**唯一一份库备份**，
+未建每日 dump 前请勿删除。
 
 导一份新的基线（在 cloud3 上执行）：
 
