@@ -252,6 +252,50 @@ vikunja 启动会自动跑 migration，把空库建成新 schema，之后导入 
 - 自带 MCP server 在 `/api/v2/mcp`（streamable HTTP），AI 客户端用它建单/查单；
   长期 token 在 vikunja 的「设置 → API Tokens」里签发，**不要**写进本仓库。
 
+### Vikunja 备份与恢复
+
+**现状（重要）**：`vikunja` 的数据只有在线副本——MySQL 在宿主机的 `/opt/mysql8/data`，附件在
+`/opt/minio/data`，两边的旧 PVC 都已删。任何一份挂了都只能靠下面的备份重建。
+
+| 产物 | 位置 | 说明 |
+| --- | --- | --- |
+| 数据库基线 | `/opt/cops/backup/vikunja-2026-10-15/vikunja-2.7.0-20261015.sql`（md5 `c86d23a94d92285fa13d8de9970a4659`） | 2026-10-15 迁移后立即导的逻辑备份，已做过一次恢复演练 |
+| 对象清单 | 同目录 `minio-objects-20261015.json` | `mc ls --recursive --json` 全量清单 |
+| 集群快照 | 同目录 `cluster-snapshot-20261015.txt`、`hostpath-du-20261015.txt` | 三个 ns 的对象列表与 hostPath 占用 |
+| 更早的库备份 | 云主机 `~/vikunja-backup/vikunja-2.2.2-20261013.sql` | 2026-10-13 从本机迁到 cloud3 时留的，**迁移到 hostPath 之前的那次搬迁没单独留 dump** |
+
+导一份新的基线（在 cloud3 上执行）：
+
+```bash
+export KUBECONFIG=$HOME/.kube/config
+D=/opt/cops/backup/vikunja-$(date +%F); mkdir -p "$D"
+kubectl -n mysql8 exec mysql-0 -c mysql -- sh -c \
+  'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers \
+     --default-character-set=utf8mb4 vikunja' > "$D/vikunja-$(date +%F).sql"
+md5sum "$D"/*.sql
+kubectl -n minio exec minio-0 -c minio -- sh -c \
+  'mc alias set chk http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && \
+   mc ls --recursive --json chk' > "$D/minio-objects-$(date +%F).json"
+```
+
+**导完必做恢复演练**（不然等于没备份）——导到临时库比行数，比对完立即删：
+
+```bash
+kubectl -n mysql8 exec mysql-0 -c mysql -- sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" \
+  -e "drop database if exists vikunja_verify; create database vikunja_verify character set utf8mb4 collate utf8mb4_unicode_ci;"'
+kubectl -n mysql8 exec -i mysql-0 -c mysql -- sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" vikunja_verify' < "$D/vikunja-$(date +%F).sql"
+# 逐张表 COUNT(*) 对齐后：
+kubectl -n mysql8 exec mysql-0 -c mysql -- sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "drop database vikunja_verify;"'
+```
+
+恢复口径：MySQL 用 dump 建库建号再导入（`vikunja` 库、`vikunja@%` 账号）；附件把对象放回
+`/opt/minio/data/<bucket>/<key>`（注意对象 key 带 `files/` 前缀）；vikunja 本身无状态，
+`kubectl -n vikunja rollout restart deploy/vikunja` 即可。
+
+**mysql8 的账号口径**：`root@%`（CI 下发的 `MYSQL_ROOT_PASSWORD`）、`xiaoy@%`（2026-10-15 建的
+管理账号，口令与 root 同值，对应 `COMMON_ADMIN_USERNAME`）、以及各应用自己的账号
+（如 `vikunja@%`）。通用单元不预建任何库，新应用接入时自行建库建号。
+
 ## 五、网络事实
 
 - `docker.io` 与 `ghcr.io` 都能直连：token/manifest/blob 全通，实测 6.9 / 7.9 MB/s，**不需要镜像加速器，也不需要旧云主机那套 `ghcr.chenby.cn` 替换**
@@ -284,6 +328,7 @@ vikunja 启动会自动跑 migration，把空库建成新 schema，之后导入 
 | `visudo` 相关 | 自定义 sudo 规则放 `/etc/sudoers.d/`，文件名**不能带点**，权限 440，改完 `visudo -c` |
 | 新 Pod 一直 `Pending`，事件报 `Insufficient cpu`，但机器明明很闲 | k8s 在只写 `limits` 时会把 limits 复制成 requests，于是 limits 大的单元隐式占满调度额度（`apps/model-ocr` 的 8 核 vs 节点 16 核；实测节点 requests 达 99%，连 100m 的 `environment/mysql8` 都调度不上）。处理：给这类单元补显式 `requests`（只是调度保底，上限仍是 limits） |
 | 降低 requests 后单副本 Deployment 的滚动卡死 | 改了 requests 的那次部署会自锁：默认 `maxUnavailable=0` 要求新 Pod 先调度成功才删旧 Pod，而旧 Pod 还占着旧的调度额度 → 新 Pod `Pending`、`rollout status` 超时。处理：`kubectl -n <ns> delete pod <旧 Pod>` 手工打破（删掉即释放额度） |
+| 在 MinIO Pod 里 `mc ls local` 报 `Access Denied` | 镜像里自带的 `/.mc/config.json` 存的是**迁移前**的 root 凭据，而 root 口令已换成 `COMMON_SIMPLE_PASSWORD`。处理：用 `mc alias set chk http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"`，后续用 `chk` 这个别名 |
 
 ## 八、接入 cops CD
 
@@ -325,3 +370,5 @@ sudo chown -R xiaoy:xiaoy /opt/cops     # CI 以 xiaoy 身份同步单元目录�
 - 泛域名证书（`*.xiaoyxq.top`）未启用。方案：Traefik ACME DNS-01 + lego 的 `tencentcloud` provider（`TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`），好处是以后加服务连 DNS 都不用动。密钥只放 k8s Secret，**不入库**。
 - `demo` 命名空间是验证残留（whoami + sslip.io 证书），可按需删除：`kubectl delete ns demo`。
 - 旧主机的 `model-logcluster_state` 卷按计划保留一周（到 2026-10-02）后再删；迁移时的状态快照备份在 cloud3 的 `/opt/cops/backup/model-logcluster-state-2026-09-25.tgz`（sha256 `377f2e7b…`）。
+- **`vikunja` / `mysql8` 目前没有定时备份**：只有 2026-10-15 的手工基线（见「Vikunja 备份与恢复」）。两条路径可选：给它加一个每日 `mysqldump` 的 CronJob（落 `/opt/cops/backup/`，需轮换）、或继续手工导。触发条件：数据开始明显增长，或发生过一次“想回滚但没 dump”。
+- MinIO 控制台入口仍对公网开放（登录用 root 账号，口令与 vikunja 的 S3 凭据同值）。收紧方式：去掉控制台 IngressRoute 改 `kubectl port-forward`，或加 Traefik basicauth 中间件。
