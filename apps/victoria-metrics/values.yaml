@@ -1,0 +1,55 @@
+# VictoriaMetrics cluster chart: internal-only, single-node/small project setup.
+vmselect:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+  route:
+    enabled: false
+
+vminsert:
+  replicaCount: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+  route:
+    enabled: false
+
+vmstorage:
+  replicaCount: 1
+  retentionPeriod: 30d
+  extraArgs:
+    dedup.minScrapeInterval: 30s
+  resources:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  persistentVolume:
+    enabled: true
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: local-path
+    size: 10Gi
+  service:
+    type: ClusterIP
+    clusterIP: None
+  ingress:
+    enabled: false
+  route:
+    enabled: false

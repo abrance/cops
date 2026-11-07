@@ -1,0 +1,308 @@
+---
+# Generated from VictoriaMetrics cluster chart 0.54.0; see README.md.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: victoria-metrics
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels: {}
+  name: vmcluster-victoria-metrics-cluster
+  namespace: victoria-metrics
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: vminsert
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+    app.kubernetes.io/version: v1.155.0-cluster
+  name: vmcluster-victoria-metrics-cluster-vminsert
+  namespace: victoria-metrics
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8480
+    protocol: TCP
+    targetPort: http
+  selector:
+    app: vminsert
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: vmselect
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+    app.kubernetes.io/version: v1.155.0-cluster
+  name: vmcluster-victoria-metrics-cluster-vmselect
+  namespace: victoria-metrics
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8481
+    protocol: TCP
+    targetPort: http
+  selector:
+    app: vmselect
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app.kubernetes.io/component: vmstorage
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+    app.kubernetes.io/version: v1.155.0-cluster
+  name: vmcluster-victoria-metrics-cluster-vmstorage
+  namespace: victoria-metrics
+spec:
+  type: ClusterIP
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - name: http
+    port: 8482
+    targetPort: http
+    protocol: TCP
+  - port: 8401
+    targetPort: vmselect
+    protocol: TCP
+    name: vmselect
+  - port: 8400
+    targetPort: vminsert
+    protocol: TCP
+    name: vminsert
+  selector:
+    app: vmstorage
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/component: vminsert
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+    app.kubernetes.io/version: v1.155.0-cluster
+  name: vmcluster-victoria-metrics-cluster-vminsert
+  namespace: victoria-metrics
+spec:
+  selector:
+    matchLabels:
+      app: vminsert
+      app.kubernetes.io/instance: vmcluster
+      app.kubernetes.io/name: victoria-metrics-cluster
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: vminsert
+        app.kubernetes.io/component: vminsert
+        app.kubernetes.io/instance: vmcluster
+        app.kubernetes.io/name: victoria-metrics-cluster
+    spec:
+      containers:
+      - name: vminsert
+        image: ${VMINSERT_IMAGE}
+        imagePullPolicy: IfNotPresent
+        args:
+        - --envflag.enable
+        - --envflag.prefix=VM_
+        - --httpListenAddr=:8480
+        - --loggerFormat=json
+        - --storageNode=vmcluster-victoria-metrics-cluster-vmstorage-0.vmcluster-victoria-metrics-cluster-vmstorage.victoria-metrics.svc.cluster.local.:8400
+        ports:
+        - name: http
+          containerPort: 8480
+        readinessProbe:
+          failureThreshold: 10
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+        livenessProbe:
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          tcpSocket:
+            port: http
+          timeoutSeconds: 5
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+      serviceAccountName: vmcluster-victoria-metrics-cluster
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vmcluster-victoria-metrics-cluster-vmselect
+  namespace: victoria-metrics
+  labels:
+    app.kubernetes.io/component: vmselect
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+    app.kubernetes.io/version: v1.155.0-cluster
+spec:
+  strategy: {}
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vmselect
+      app.kubernetes.io/instance: vmcluster
+      app.kubernetes.io/name: victoria-metrics-cluster
+  template:
+    metadata:
+      labels:
+        app: vmselect
+        app.kubernetes.io/component: vmselect
+        app.kubernetes.io/instance: vmcluster
+        app.kubernetes.io/name: victoria-metrics-cluster
+    spec:
+      serviceAccountName: vmcluster-victoria-metrics-cluster
+      automountServiceAccountToken: true
+      securityContext: {}
+      containers:
+      - name: vmselect
+        securityContext: {}
+        image: ${VMSELECT_IMAGE}
+        imagePullPolicy: IfNotPresent
+        args:
+        - --cacheDataPath=/cache
+        - --envflag.enable
+        - --envflag.prefix=VM_
+        - --httpListenAddr=:8481
+        - --loggerFormat=json
+        - --storageNode=vmcluster-victoria-metrics-cluster-vmstorage-0.vmcluster-victoria-metrics-cluster-vmstorage.victoria-metrics.svc.cluster.local.:8401
+        ports:
+        - name: http
+          containerPort: 8481
+        readinessProbe:
+          failureThreshold: 10
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+        livenessProbe:
+          failureThreshold: 3
+          initialDelaySeconds: 5
+          periodSeconds: 15
+          tcpSocket:
+            port: http
+          timeoutSeconds: 5
+        resources:
+          limits:
+            memory: 512Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        volumeMounts:
+        - mountPath: /cache
+          name: cache-volume
+      terminationGracePeriodSeconds: 60
+      volumes:
+      - name: cache-volume
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app.kubernetes.io/component: vmstorage
+    app.kubernetes.io/instance: vmcluster
+    app.kubernetes.io/name: victoria-metrics-cluster
+    app.kubernetes.io/version: v1.155.0-cluster
+  name: vmcluster-victoria-metrics-cluster-vmstorage
+  namespace: victoria-metrics
+spec:
+  serviceName: vmcluster-victoria-metrics-cluster-vmstorage
+  selector:
+    matchLabels:
+      app: vmstorage
+      app.kubernetes.io/instance: vmcluster
+      app.kubernetes.io/name: victoria-metrics-cluster
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  template:
+    metadata:
+      labels:
+        app: vmstorage
+        app.kubernetes.io/component: vmstorage
+        app.kubernetes.io/instance: vmcluster
+        app.kubernetes.io/name: victoria-metrics-cluster
+    spec:
+      containers:
+      - name: vmstorage
+        image: ${VMSTORAGE_IMAGE}
+        imagePullPolicy: IfNotPresent
+        args:
+        - --dedup.minScrapeInterval=30s
+        - --envflag.enable
+        - --envflag.prefix=VM_
+        - --httpListenAddr=:8482
+        - --loggerFormat=json
+        - --retentionPeriod=30d
+        - --storageDataPath=/storage
+        ports:
+        - name: http
+          containerPort: 8482
+        - name: vminsert
+          containerPort: 8400
+        - name: vmselect
+          containerPort: 8401
+        readinessProbe:
+          failureThreshold: 10
+          httpGet:
+            path: /health
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 5
+        resources:
+          limits:
+            memory: 1Gi
+          requests:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: vmstorage-volume
+          mountPath: /storage
+      serviceAccountName: vmcluster-victoria-metrics-cluster
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 60
+  minReadySeconds: 5
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: vmstorage-volume
+    spec:
+      accessModes:
+      - ReadWriteOnce
+      resources:
+        requests:
+          storage: 10Gi
+      storageClassName: local-path
