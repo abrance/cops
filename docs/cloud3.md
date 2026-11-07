@@ -87,7 +87,7 @@ esac
 | --- | --- |
 | `kube-system/HelmChartConfig traefik` | 上面的 ACME + persistence 配置 |
 | `kube-system/pvc traefik` | 存 `acme.json` |
-| `cops/` 命名空间 | 从旧主机迁入的单元，全部由 CI 部署（见第八节）：`model-ocr`（Deployment+Service+2×IngressRoute，无状态）、`model-logcluster`（同上 + PVC `model-logcluster-state` 2Gi）、共享 `Middleware redirect-https` |
+| `cops/` 命名空间 | 由 CI 部署的应用单元：`lems-cloud3`（LEMS Deployment+Service+PVC `lems-data` 10Gi+2×IngressRoute，入口 `https://ems.xiaoyxq.top`）、`model-ocr`（Deployment+Service+2×IngressRoute，无状态）、`model-logcluster`（同上 + PVC `model-logcluster-state` 2Gi）、共享 `Middleware redirect-https` |
 | `openbao/` 命名空间 | OpenBao 密钥管理，仓库第一个 helm chart 单元（期望状态 = `apps/openbao/values.yaml` 渲染官方 chart + `k8s.yaml`，CI 全自动，见 README「helm chart 单元」）；对象：StatefulSet `openbao`（OnDelete 策略）+ 内置 PVC `data-openbao-openbao-0` 10Gi + ConfigMap/ServiceAccount/ClusterRoleBinding + 2×IngressRoute + `Middleware redirect-https`；入口 `https://bao.xiaoyxq.top`，UI 在 `/ui/` |
 | `demo/`（whoami deploy+svc、`IngressRoute whoami-http`/`whoami-tls`、`Middleware redirect-https`） | **临时验证用**，可作为新服务模板；不要了就 `kubectl delete ns demo` |
 | `minio/` 命名空间 | 对象存储单元 `environment/minio`（CI 部署）：StatefulSet `minio` + Service + 4×IngressRoute（API 与控制台各 web/websecure 两条）+ `Middleware redirect-https`；数据在宿主机 `/opt/minio/data`（hostPath）。迁移前它是手工建的 `minio-test/`（PVC data-minio-0 + 两条手工 IngressRoute），搬迁步骤见下一小节 |
@@ -96,6 +96,8 @@ esac
 | `186.244.201.55.sslip.io` 的证书 | 已签发成功，作为端到端验证证据 |
 
 新增服务的标准三步：DNS 加 A 记录指向 `186.244.201.55` → 确认解析生效 → 照抄 demo 的两条 IngressRoute（换 Host）。**顺序不能反**，反了就是签发 404 失败，会撞 Let's Encrypt 限流（同域名每小时 5 次失败 / 每周 5 张重复证书）。
+
+`ems.xiaoyxq.top` 的 cloud3 路由由 `apps/lems-cloud3` 管理；DNS A 记录需指向 `186.244.201.55`。DNS 切换前该域名仍可能指向旧主机，Traefik 的 Let's Encrypt 证书签发要等解析更新后再验收。
 
 ### OpenBao 特化：初始化解封与日常 Unseal
 
