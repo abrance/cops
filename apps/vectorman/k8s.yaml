@@ -180,8 +180,7 @@ data:
     # ⚠️ 预算必须高于 tsink 的「地板」：实测 768MiB 时每轮写入都报
     #   `Memory budget exceeded: budget 805306368, required at least 974516021`
     # → 写入全部 30s 超时、Agent 的缓冲永远排不空（drop oldest 刷屏）。
-    # 1.5GiB 在地板之上；容器上限用 6Gi（线上 2026-10-08 起即 6Gi）。3Gi 会在 WAL
-# 回放时吃满限制、dataserver 卡在 startup probe 起不来（2026-11-07 复现）。
+    # 1.5GiB 在地板之上，容器上限 6Gi（线上 2026-10-08 起即 6Gi；3Gi 会在 WAL 回放时卡死 startup probe）。
     ts_memory_limit_bytes = 1610612736
     ts_wal_size_limit_bytes = 268435456
     apm_agg_interval_secs = 60
