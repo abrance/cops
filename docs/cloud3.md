@@ -2,7 +2,7 @@
 
 本文件记录 `cloud3` 云主机上**人工做过的所有重要操作**，用于故障后按顺序重建。所有内容都在主机上手工执行过，不是设想。
 
-> 与 `deploy.sh` 那套（GitHub Actions 推到旧云主机的 Docker Compose 流程）**无关**：cloud3 是独立的 k3s 主机，目前不接入本仓库的 CD 流程。
+> 与 `deploy.sh` 那套（GitHub Actions 推到旧云主机的 Docker Compose 流程）**部署实现不同**：cloud3 是独立的 k3s 主机，业务服务通过本仓库的 k8s CD 流程部署（见第八节）；本文件记录主机维护与集群级配置。
 
 ## 一、主机信息
 

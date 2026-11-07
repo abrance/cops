@@ -2,6 +2,11 @@
 
 云主机服务的 GitOps CD 仓库。本仓库是部署期望状态的唯一事实源：修改 `apps/<app>/`（应用）或 `environment/<name>/`（应用依赖的环境组件）下的文件并合入 `main`，GitHub Actions 会把该单元同步到云主机并应用。
 
+## cloud3 服务部署规则
+
+1. **默认走 cops 单元**：cloud3 上新增或变更服务，必须纳入本仓库 `apps/<name>/` 或 `environment/<name>/`，并走 CI 渲染、同步和部署；不要在主机上临时手工执行 `helm install` 或 `kubectl apply` 部署服务。
+2. **例外须说明并报备**：仅集群级组件（如 k3s 自身、Traefik、CRD、Gateway API）或确实无法适配 cops 单元的情况可例外；实施前须写明原因并报给参谋长。
+
 ## 架构
 
 ```text
