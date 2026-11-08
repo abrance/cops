@@ -263,6 +263,10 @@ jobs:
           # lems 七牛云 AK/SK（其余 QINIU_* 为明文，放 apps/lems/.env）
           QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
           QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
+          # lems（k8s）：静态 API token，容器侧变量名 EMS_API_STATIC_TOKEN。
+          # 只在 SECRET_ENV 声明（不进 REQUIRED_ENV）：要关这个特性时从 SECRET_ENV
+          # 删掉即可，pod 滚动重建后不再带该变量，不会变成「缺变量部署失败」。
+          EMS_API_STATIC_TOKEN: ${{ secrets.EMS_API_STATIC_TOKEN }}
           # model-agent（k8s）：provider api key 与入口密码；由 deploy-k8s.sh
           # 变成 k8s Secret model-agent-secrets 注入容器
           AGENT_PROVIDER_API_KEY: ${{ secrets.AGENT_PROVIDER_API_KEY }}
