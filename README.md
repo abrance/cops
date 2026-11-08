@@ -7,7 +7,7 @@
 1. **默认走 cops 单元**：cloud3 上新增或变更服务，必须纳入本仓库 `apps/<name>/` 或 `environment/<name>/`，并走 CI 渲染、同步和部署；不要在主机上临时手工执行 `helm install` 或 `kubectl apply` 部署服务。
 2. **例外须说明并报备**：仅集群级组件（如 k3s 自身、Traefik、CRD、Gateway API）或确实无法适配 cops 单元的情况可例外；实施前须写明原因并报给参谋长。
 
-> cloud3 的 k8s 单元指 `apps/<name>/k8s.yaml`（经 CI 渲染后 apply 到 k3s）。`apps/lems`、`apps/ptdoc` 是旧云主机 Docker Compose 流程的目录，不属于 cloud3 的 k8s 单元。
+> cloud3 的 k8s 单元指 `apps/<name>/k8s.yaml`（经 CI 渲染后 apply 到 k3s）。`apps/lems`、`apps/ptdoc` 是旧云主机 Docker Compose 流程的目录；cloud3 的 LEMS 独立由 `apps/lems-cloud3` 管理。
 
 ## 架构
 
@@ -15,14 +15,14 @@
 开发者 / PR ──► cops(main) ──► GitHub Actions ──SSH──► 云主机
                                  │                     ├─ 同步 /opt/cops/apps/<app>
                                  │                     ├─ 同步 /opt/cops/environment/<name>
-                                 │                     ├─ docker compose pull
-                                 │                     └─ up -d + 健康检查
+                                 │                     ├─ default：docker compose pull / up -d
+                                 │                     └─ cloud3：kubectl apply / rollout / 健康检查
                                  └─ 凭据来自 GitHub Secrets
 ```
 
 - 目录约定：`apps/<名字>/` 是应用；`environment/<名字>/` 是**应用所依赖的环境组件**（中间件等），两者内容布局完全一致（`compose.yaml` + `.env` + `app.conf`），只是同步到云主机的根目录不同（`/opt/cops/apps/<名字>` 与 `/opt/cops/environment/<名字>`）。
 - 触发方式：PR 只做编排校验不部署；合入 `main` 后只部署受影响单元；`workflow_dispatch` 可手动指定或全量；每天定时全量重建以纠正漂移。
-- 镜像来源：应用镜像由各自源码仓库构建并发布，Compose 部署统一从 `ghcr.chenby.cn` 拉取；本仓库不保存 registry 凭据。
+- 镜像来源：应用镜像由各自源码仓库构建并发布；default 上的 Compose 部署使用 `ghcr.chenby.cn`，cloud3 使用 `ghcr.io`；本仓库不保存 registry 凭据。
 - 密钥分层：SSH 主机 / 账号 / 私钥放 GitHub Secrets；运行期密钥放云主机 `/opt/cops/secrets/<名字>.env`（权限 600，不入库）。
 - 部署模式：默认 `compose`（容器编排）；`app.conf` 声明 `DEPLOY_MODE=native` 的单元走发布包 + systemd 部署，见下文「native 部署模式」。
 
@@ -30,16 +30,18 @@
 
 | 应用 | 容器 | 镜像 | 说明 |
 | --- | --- | --- | --- |
-| `lems` | `lems`、`emsdevice` | `ghcr.chenby.cn/abrance/ems`、`ghcr.chenby.cn/abrance/emsdevice` | EMS 主服务与 ess_demo Modbus 从站 |
+| `lems` | `lems`、`emsdevice` | `ghcr.chenby.cn/abrance/ems`、`ghcr.chenby.cn/abrance/emsdevice` | default（cloud2）上的旧 Compose 部署：EMS 主服务与 ess_demo Modbus 从站 |
+| `lems-cloud3` | `lems` | `ghcr.io/abrance/ems:v1.0.55` | cloud3（k8s），入口 `https://ems.xiaoyxq.top`；**有状态**，SQLite 与 Prometheus TSDB 在 PVC `cops/lems-data`（10Gi）；不部署 emsdevice |
 | `model-ocr` | `model-ocr` | `ghcr.chenby.cn/abrance/modelman-ocr` | PP-OCR 文字识别服务（MNN/CPU）；已迁 cloud3（k8s），lems 经公网入口 `https://ocr.xiaoyxq.top` 调用；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `model-agent` | `model-agent` | `ghcr.io/abrance/model-agent` | 主工作台（Pi + 自托能力基线）；cloud3（k8s），入口 `https://ai.xiaoyxq.top`；**有状态**，组件目录与会话在 PVC `model-agent-data`；源码仓库 [abrance/pi-web](https://github.com/abrance/pi-web)（pi-web 的 fork） |
 | `omp-web` | `omp-web` | `ghcr.io/abrance/omp-web` | 第二个工作台（omp 实例）：浏览器里跑 omp 自己的 SDK；cloud3（k8s），入口 `https://omp.xiaoyxq.top`；**有状态**，agent 目录与工作目录在 PVC `omp-web-data`；源码仓库 [abrance/omp-box](https://github.com/abrance/omp-box) |
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | 无（systemd） | GitHub Releases 静态二进制包 | GSE 采集链路的 6 个组件，native 部署，数据保留在 `/opt/vectorman` |
-| `vikunja` | `vikunja` | `docker.io/vikunja/vikunja:2.7.0` | 待办/项目管理（自托管），cloud3（k8s），入口 `https://vikunja.xiaoyxq.top`；**无状态**：附件在 `environment/minio`、数据在 `environment/mysql8`；自带 MCP server（`/api/v2/mcp`），供 AI 客户端直接建单/查单 | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
+| `vikunja` | `vikunja` | `docker.io/vikunja/vikunja:2.7.0` | 待办/项目管理（自托管），cloud3（k8s），入口 `https://vikunja.xiaoyxq.top`；**无状态**：附件在 `environment/minio`、数据在 `environment/mysql8`；自带 MCP server（`/api/v2/mcp`），供 AI 客户端直接建单/查单 |
+| `openbao` | `openbao` | `quay.io/openbao/openbao` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
-单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `model-ocr`/`model-agent`/`omp-web`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio`/`mysql8`/`vikunja` 在 `cloud3`，其余在 `default`。
+单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`model-ocr`/`model-agent`/`omp-web`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio`/`mysql8`/`vikunja` 在 `cloud3`，其余在 `default`。
 
 ## 已纳管环境组件
 
@@ -61,12 +63,16 @@
 
 ```text
 .
-├── apps/                  # 应用（一个目录 = 一个 compose 项目）
+├── apps/                  # 应用（一个目录 = 一个独立部署单元）
 │   ├── lems/
 │   │   ├── app.conf       # 应用元数据：健康检查容器 / 超时 / 探测地址 / 必需变量
 │   │   ├── compose.yaml   # 期望状态编排
 │   │   ├── .env           # 非敏感变量（随仓库提交）
 │   │   └── emsdevice.json # Modbus 从站配置（含光伏/负载/关口电表/储能柜点表）
+│   ├── lems-cloud3/       # cloud3 上的 LEMS 主应用（K8s；不含 emsdevice）
+│   │   ├── app.conf
+│   │   ├── .env
+│   │   └── k8s.yaml
 │   └── ptdoc/
 │       ├── app.conf
 │       ├── compose.yaml
@@ -101,6 +107,8 @@
 | `DEPLOY_PORT` | 否 | SSH 端口，默认 `22` |
 | `DEPLOY_KNOWN_HOSTS` | 否 | 服务器 SSH 主机公钥，建议固定（不配置时用 `ssh-keyscan` 临时获取） |
 | `PTDOC_DATA_KEY` | 是 | `ptdoc` 运行期密钥，用于加解密七牛 SecretKey；部署时下发到 `/opt/cops/secrets/ptdoc.env` |
+| `QINIU_ACCESS_KEY` | 是 | LEMS 七牛云 Access Key；部署时下发到对应单元的 `/opt/cops/secrets/<名字>.env` |
+| `QINIU_SECRET_KEY` | 是 | LEMS 七牛云 Secret Key；部署时下发到对应单元的 `/opt/cops/secrets/<名字>.env` |
 | `AGENT_PROVIDER_API_KEY` | 是 | `model-agent` 的大模型 provider api key；下发到 `/opt/cops/secrets/model-agent.env`，再由部署脚本变成 k8s Secret 注入容器 |
 | `PI_WEB_PASSWORD` | 是 | `model-agent` 与 `omp-web` 的平台入口密码（单密码，浏览器登录与 API Basic 认证共用）；两个单元**用同一个值**（有意选择，见 [modelman docs/omp-instance.md](https://github.com/abrance/modelman/blob/main/docs/omp-instance.md)） |
 | `OMP_WEB_PASSWORD` | 否（不单独配） | 不是独立的 GitHub secret：`deploy.yml` 把 `secrets.PI_WEB_PASSWORD` 映射成它，用于 `omp-web` 单元 |
@@ -350,7 +358,7 @@ bash -n scripts/deploy.sh scripts/deploy-k8s.sh
 ## 说明
 
 - `deploy.sh` 使用 `--remove-orphans`：当某个服务从编排文件中移除时，会停掉并删除该项目下多余的容器。它只影响容器，不会删除数据卷，`lems-data` 等持久化数据不受影响。
-- 数据不随仓库走：`ptdoc` 的 SQLite 库挂载自 `/opt/ptdoc/data`，`ptdoc-qdrant` 的向量库挂载自 `/opt/ptdoc-qdrant/qdrant-storage`，`lems` 使用命名卷 `lems-data`。GitOps 只管理编排与配置，删容器不丢数据。
+- 数据不随仓库走：`ptdoc` 的 SQLite 库挂载自 `/opt/ptdoc/data`，`ptdoc-qdrant` 的向量库挂载自 `/opt/ptdoc-qdrant/qdrant-storage`，default 上的 `lems` 使用命名卷 `lems-data`，cloud3 上的 `lems-cloud3` 使用 PVC `cops/lems-data`。GitOps 只管理编排与配置，删容器不丢数据。
 - 全量部署不保证执行顺序：`apps/` 与 `environment/` 的单元在一次运行里平级展开（`max-parallel: 1`，按解析顺序）。依赖关系靠健康检查与重试兜住；主机重建后建议先手动触发环境组件。
 
 ## 文档

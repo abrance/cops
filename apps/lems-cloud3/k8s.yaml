@@ -1,0 +1,191 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lems-data
+  namespace: ${K8S_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: ${LEMS_DATA_SIZE}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lems-cloud3-config
+  namespace: ${K8S_NAMESPACE}
+data:
+  APP_PROFILE: "${APP_PROFILE}"
+  TZ: "${TZ}"
+  AUTH_BYPASS_ROLE: ""
+  QINIU_BUCKET: "${QINIU_BUCKET}"
+  QINIU_DOMAIN: "${QINIU_DOMAIN}"
+  QINIU_ZONE: "${QINIU_ZONE}"
+  OCR_BASE_URL: "${OCR_BASE_URL}"
+  OCR_TIMEOUT_SECONDS: "${OCR_TIMEOUT_SECONDS}"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lems
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: lems
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: lems
+  template:
+    metadata:
+      labels:
+        app: lems
+    spec:
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        - name: verify-new-data-volume
+          image: docker.io/library/busybox:1.36.1
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -ec
+            - |
+              marker=/app/out/.cops-lems-volume-initialized
+              if [ -e "$marker" ]; then
+                echo "LEMS volume was previously verified; preserving existing data"
+                exit 0
+              fi
+              for entry in /app/out/* /app/out/.[!.]* /app/out/..?*; do
+                [ -e "$entry" ] || [ -L "$entry" ] || continue
+                echo "Refusing to start: lems-data is not empty and has no validation marker" >&2
+                exit 1
+              done
+              touch "$marker"
+              echo "Verified new empty lems-data volume"
+          volumeMounts:
+            - name: lems-data
+              mountPath: /app/out
+      containers:
+        - name: lems
+          image: ${LEMS_IMAGE}:${LEMS_IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          command:
+            - ./ems
+            - --web=true
+            - --force=true
+          ports:
+            - name: http
+              containerPort: ${LEMS_PORT}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: lems-cloud3-config
+            - secretRef:
+                name: lems-cloud3-secrets
+          volumeMounts:
+            - name: lems-data
+              mountPath: /app/out
+            - name: zoneinfo
+              mountPath: /usr/share/zoneinfo
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 36
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+      volumes:
+        - name: lems-data
+          persistentVolumeClaim:
+            claimName: lems-data
+        - name: zoneinfo
+          hostPath:
+            path: /usr/share/zoneinfo
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lems
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: lems
+spec:
+  type: ClusterIP
+  selector:
+    app: lems
+  ports:
+    - name: http
+      port: ${LEMS_PORT}
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: lems-cloud3-redirect-https
+  namespace: ${K8S_NAMESPACE}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: lems-cloud3-web
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: lems-cloud3-redirect-https
+      services:
+        - name: lems
+          port: ${LEMS_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: lems-cloud3-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      services:
+        - name: lems
+          port: ${LEMS_PORT}
+  tls:
+    certResolver: letsencrypt
