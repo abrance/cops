@@ -12,7 +12,9 @@ services:
     image: ${LEMS_IMAGE}:${LEMS_IMAGE_TAG}
     container_name: lems
     restart: unless-stopped
-    pull_policy: always
+    # pull_policy 用 missing：deploy.sh 的「拉取镜像」步骤已显式 pull（带重试），
+    # always 会让 `up -d` 再拉一次同 digest，registry 一次 522 就把部署打红（2026-11-09 lems）。
+    pull_policy: missing
     platform: linux/amd64
     depends_on:
       - emsdevice
@@ -68,7 +70,9 @@ services:
     image: ${EMSDEVICE_IMAGE}:${EMSDEVICE_IMAGE_TAG}
     container_name: emsdevice
     restart: unless-stopped
-    pull_policy: always
+    # pull_policy 用 missing：deploy.sh 的「拉取镜像」步骤已显式 pull（带重试），
+    # always 会让 `up -d` 再拉一次同 digest，registry 一次 522 就把部署打红（2026-11-09 lems）。
+    pull_policy: missing
     platform: linux/amd64
     command:
       - --listen
