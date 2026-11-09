@@ -56,6 +56,11 @@ if [ -z "${repo_name}" ] || [ "${repo_name}" = "${CHART}" ]; then
   exit 1
 fi
 
+# chart 优先用仓库里随带的 tarball（apps/<unit>/chart/*.tgz）：CI runner 到 GitHub
+# releases 时通时不通，2026-11-09 的校验就是 504 Gateway Timeout 红的，3 次快速
+# 重试也没救回来。本地包在仓库里就完全不碰网络。升级 chart：换 tarball + 改 app.conf 的版本。
+local_chart="$(ls -1 "${UNIT_DIR}"/chart/*.tgz 2>/dev/null | head -1 || true)"
+
 # helm_retry：这两个步骤都要实时联网（repo index + chart tarball 走 GitHub releases，
 # 冷启动约 30s）。网络抖一下就整条 Deploy 红，2026-11-08 的定时全量部署就是这样红的：
 # 唯一失败的 `校验 apps/openbao` 把下面两个命令的 stderr 全丢掉了，日志里只剩
@@ -85,14 +90,20 @@ helm_retry() {
 
 # --force-update：runner 若缓存了同名但不同 URL 的 repo，不加这个会直接报
 # 「repository name already exists」，与网络无关却同样红。
-if ! helm_retry helm repo add --force-update "${repo_name}" "${CHART_REPO}" >/dev/null; then
-  echo "helm repo add ${repo_name} ${CHART_REPO} 失败" >&2
-  exit 1
+if [ -z "${local_chart}" ]; then
+  if ! helm_retry helm repo add --force-update "${repo_name}" "${CHART_REPO}" >/dev/null; then
+    echo "helm repo add ${repo_name} ${CHART_REPO} 失败" >&2
+    exit 1
+  fi
+  chart_ref="${CHART}"
+else
+  echo "使用仓库内 chart：${local_chart}" >&2
+  chart_ref="${local_chart}"
 fi
 
 chart_out="$(mktemp)"
 trap 'rm -f "${chart_out}"' EXIT
-if ! helm_retry helm template "${NAME}" "${CHART}" --version "${CHART_VERSION}" -f "${VALUES}" >"${chart_out}"; then
+if ! helm_retry helm template "${NAME}" "${chart_ref}" --version "${CHART_VERSION}" -f "${VALUES}" >"${chart_out}"; then
   echo "helm template ${CHART} --version ${CHART_VERSION} 失败" >&2
   exit 1
 fi
