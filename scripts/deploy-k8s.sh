@@ -235,6 +235,12 @@ fi
 # 与上面 ConfigMap 同一个道理，只是对象换成 Secret：**改了密钥但不重启，Pod 还跑旧值**。
 # 必须放在 kubectl apply 之后：首次部署时 Deployment 还没创建，提前 patch 会 NotFound
 # 直接被 set -e 带走（这个坑真实发生过，见 2026-09-27 的首次部署失败）。
+#
+# 只给**真的引用这个 Secret** 的工作负载打注解：以前无条件遍历 K8S_ROLLOUT，
+# 于是 vectorman 的 dataserver / console（都不引用任何 Secret）也跟着滚动。
+# 2026-11-09 的代价：PR #97 只是给 gse-agent 新增 GSE_AGENT_TOKEN，密钥一变，
+# 最重的 dataserver 白重启，冷启动超过 20 分钟 → startup probe 杀掉容器 →
+# 新一轮回放从头开始 → 永远起不来。用不到密钥的工作负载不该被密钥变化牵动。
 if [ -n "${SECRET_ENV:-}" ]; then
   SECRET_ANNOTATION="cops.vectorman.cn/secret-checksum"
   secret_digest="$(sha256sum "${SECRETS_FILE}" | awk '{print $1}')"
@@ -242,6 +248,17 @@ if [ -n "${SECRET_ENV:-}" ]; then
   for object in ${K8S_ROLLOUT:-}; do
     res="$(rollout_resource "${object%%/*}")" || continue
     name="${object##*/}"
+
+    # 该工作负载引用到的 Secret（volumes[].secret.secretName / env 的 secretKeyRef /
+    # envFrom 的 secretRef）。一个都没有 → 密钥变化与它无关，跳过（不清旧注解：
+    # 清注解本身也是 podTemplate 变更，会反向触发一次滚动）。
+    secret_refs="$(kubectl -n "${NAMESPACE}" get "${res}" "${name}" \
+      -o 'jsonpath={.spec.template.spec.volumes[*].secret.secretName}{" "}{.spec.template.spec.containers[*].env[*].valueFrom.secretKeyRef.name}{" "}{.spec.template.spec.containers[*].envFrom[*].secretRef.name}' \
+      2>/dev/null | tr ' ' '\n' | grep -v '^$' | sort -u || true)"
+    if [ -z "${secret_refs}" ]; then
+      log "  ${name}: 不引用 Secret，跳过密钥滚动"
+      continue
+    fi
 
     current="$(kubectl -n "${NAMESPACE}" get "${res}" "${name}" \
       -o "jsonpath={.spec.template.metadata.annotations.cops\.vectorman\.cn/secret-checksum}" \
