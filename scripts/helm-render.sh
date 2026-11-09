@@ -56,18 +56,52 @@ if [ -z "${repo_name}" ] || [ "${repo_name}" = "${CHART}" ]; then
   exit 1
 fi
 
-if ! helm repo add "${repo_name}" "${CHART_REPO}" >/dev/null 2>&1; then
+# helm_retry：这两个步骤都要实时联网（repo index + chart tarball 走 GitHub releases，
+# 冷启动约 30s）。网络抖一下就整条 Deploy 红，2026-11-08 的定时全量部署就是这样红的：
+# 唯一失败的 `校验 apps/openbao` 把下面两个命令的 stderr 全丢掉了，日志里只剩
+# 「Process completed with exit code 1」，连是网络还是 values.yaml 都不出来。
+# 所以这里：网络类步骤最多重试 3 次，且最终失败必须把 helm 的真实报错打到 stderr。
+# 只重试 repo add / 拉 chart；渲染产物本身的错误（模板语法、values 类型不符）照样一次就红。
+helm_retry() {
+  local attempt=1 log
+  log="$(mktemp)"
+  while :; do
+    if "$@" >"${log}" 2>&1; then
+      cat "${log}"
+      rm -f "${log}"
+      return 0
+    fi
+    if [ "${attempt}" -ge 3 ]; then
+      echo "命令失败（已重试 ${attempt} 次）：$*" >&2
+      sed 's/^/  /' "${log}" >&2
+      rm -f "${log}"
+      return 1
+    fi
+    echo "第 ${attempt} 次失败，${attempt} 秒后重试：$*" >&2
+    sleep "${attempt}"
+    attempt=$((attempt + 1))
+  done
+}
+
+# --force-update：runner 若缓存了同名但不同 URL 的 repo，不加这个会直接报
+# 「repository name already exists」，与网络无关却同样红。
+if ! helm_retry helm repo add --force-update "${repo_name}" "${CHART_REPO}" >/dev/null; then
   echo "helm repo add ${repo_name} ${CHART_REPO} 失败" >&2
   exit 1
 fi
 
-helm template "${NAME}" "${CHART}" --version "${CHART_VERSION}" \
-  -f "${VALUES}" 2>/dev/null \
-  | python3 -c '
+chart_out="$(mktemp)"
+trap 'rm -f "${chart_out}"' EXIT
+if ! helm_retry helm template "${NAME}" "${CHART}" --version "${CHART_VERSION}" -f "${VALUES}" >"${chart_out}"; then
+  echo "helm template ${CHART} --version ${CHART_VERSION} 失败" >&2
+  exit 1
+fi
+
+python3 -c '
 import re, sys
 text = sys.stdin.read()
 docs = [c for c in re.split(r"(?m)^---[ \t]*$", text) if c.strip() and "helm.sh/hook" not in c]
 # 输出必须带前导 ---：CI 把本输出追加到 render-k8s.py 的产物后面，后者结尾没有分隔符。
 print("---\n" + "---\n".join(docs))
 
-'
+' < "${chart_out}"
