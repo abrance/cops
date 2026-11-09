@@ -508,3 +508,122 @@ spec:
           port: 7200
   tls:
     certResolver: letsencrypt
+---
+# ── gse-agent（DaemonSet：每个节点一个采集 Agent）─────────────────────────────
+#
+# 这一段是 2026-11-09 从 cloud3 集群里的**实跑对象**回抓后清洗写进来的：该
+# DaemonSet 与它的 ConfigMap/ServiceAccount 是 2026-09-28 手工 `kubectl apply`
+# 建的，仓库里一直没有，于是每天的全量 apply 纠正不到它（镜像与配置只能靠手工
+# patch，漂移必然复发）。清洗掉的只有运行时字段（status / uid / resourceVersion /
+# generation / creationTimestamp / kubectl.kubernetes.io/last-applied-configuration），
+# spec 逐字段与线上一致。
+#
+# 部署顺序无关：DS 与 gse-server 在同一命名空间，Agent 连的是公网域名:NodePort，
+# 不是集群内 Service 名（见下面 gse-agent.toml 的 server_addr）。
+#
+# ⚠️ 镜像不带 registry 前缀：它是 cloud3 节点本地导入的镜像（k3s ctr images
+#    import），不从任何 registry 拉，所以 imagePullPolicy 必须是 IfNotPresent。
+#    换节点或重建集群时先导入对应 tag，否则 Pod 会卡在 ErrImageNeverPull。
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gse-agent
+  namespace: ${K8S_NAMESPACE}
+---
+# server_addr 写域名:NodePort 而不是集群内 Service：gse-server 的 7100 只在集群内
+# 监听，对外只有 NodePort 30710，Agent 属于「集群外客户端」那一侧。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gse-agent-conf
+  namespace: ${K8S_NAMESPACE}
+data:
+  gse-agent.toml: |
+    # 与 gse-server 的连接。也可用环境变量 GSE_AGENT_SERVER 覆盖（见 DaemonSet）。
+    server_addr = "${PUBLIC_HOST_GSE}:${NODEPORT_RPC}"
+    # agent_id：由 Downward API 覆盖为节点名（GSE_AGENT_ID），这里留占位。
+    agent_id = "ser539375215934"
+    # token：由 Secret 经 GSE_AGENT_TOKEN 覆盖，这里留空。
+    token = ""
+    heartbeat_interval_secs = 30
+    # 集群内不接收 OTLP（应用要发 span 时再打开，并另配 Service/NodePort）。
+    otlp_enabled = false
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gse-agent
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: gse-agent
+spec:
+  selector:
+    matchLabels:
+      app: gse-agent
+  template:
+    metadata:
+      labels:
+        app: gse-agent
+    spec:
+      serviceAccountName: gse-agent
+      # Agent 采的是节点上的进程（eBPF / BTF / ftrace），必须在节点 PID 命名空间里
+      # 并以 privileged 跑；tracing 目录用 hostPath 只读挂载。
+      hostPID: true
+      terminationGracePeriodSeconds: 20
+      # 单节点也写上：将来节点打 taint（专用/维护）时 Agent 仍然要落上去。
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: gse-agent
+          image: ${AGENT_IMAGE}:${AGENT_IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+          env:
+            - name: GSE_AGENT_CONFIG
+              value: /etc/vectorman/gse-agent.toml
+            # 节点名即 agent_id：一台节点一个 Agent，台账里用节点名对账。
+            - name: GSE_AGENT_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # token 不从仓库走：由 deploy-k8s.sh 把 /opt/cops/secrets/vectorman.env
+            # 变成命名空间里的 Secret <APP_NAME>-secrets（与其它单元同一套管道）。
+            - name: GSE_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: vectorman-secrets
+                  key: GSE_AGENT_TOKEN
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/vectorman
+              readOnly: true
+            - name: btf
+              mountPath: /sys/kernel/btf
+              readOnly: true
+            - name: tracing
+              mountPath: /sys/kernel/tracing
+              readOnly: true
+            # /tmp 用 emptyDir 遮住宿主机的 /tmp：Agent 的临时文件不落到节点盘上。
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: conf
+          configMap:
+            name: gse-agent-conf
+        - name: btf
+          hostPath:
+            path: /sys/kernel/btf
+            type: Directory
+        - name: tracing
+          hostPath:
+            path: /sys/kernel/tracing
+            type: Directory
+        - name: tmp
+          emptyDir: {}

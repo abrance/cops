@@ -66,6 +66,17 @@ fi
 NAMESPACE="${K8S_NAMESPACE:-cops}"
 TIMEOUT="${HEALTH_TIMEOUT:-180}"
 
+# K8S_ROLLOUT 里的对象写成 <kind>/<name>。需要 checksum 注入的只有带 podTemplate
+# 的工作负载（Deployment 与 DaemonSet）；kind → kubectl 资源名的映射集中在这里，
+# 免得三处各写一遍 case。
+rollout_resource() {
+  case "$1" in
+    deployment) printf 'deploy' ;;
+    daemonset) printf 'ds' ;;
+    *) return 1 ;;
+  esac
+}
+
 if [ ! -f "${RENDERED}" ]; then
   echo "缺少渲染产物 ${RENDERED}：k8s 单元由 CI 在 runner 侧渲染后同步，不要在主机上手工渲染" >&2
   exit 1
@@ -158,7 +169,8 @@ fi
 #     k3s 主机没有 jq，也不保证有 python3。
 #   - 只处理 rendered.yaml 里本单元声明的 ConfigMap，绝不碰别的单元的。
 #
-# 已知限制：只覆盖 Deployment → ConfigMap 的直接引用；无 ConfigMap 的单元
+# 已知限制：只覆盖 Deployment / DaemonSet → ConfigMap 的直接引用（子路径挂载也覆盖，
+# 但边车容器里不通过 volumes/envFrom 引用的 ConfigMap 不管）；无 ConfigMap 的单元
 # （如 model-ocr）整段 no-op。
 if kubectl -n "${NAMESPACE}" get configmap >/dev/null 2>&1; then
   CHECKSUM_ANNOTATION="cops.vectorman.cn/configmap-checksum"
@@ -171,16 +183,15 @@ if kubectl -n "${NAMESPACE}" get configmap >/dev/null 2>&1; then
   ' "${RENDERED}" | sort -u)"
 
   if [ -n "${declared_cms}" ]; then
-    log "为引用 ConfigMap 的 Deployment 注入 checksum 注解"
+    log "为引用 ConfigMap 的工作负载注入 checksum 注解"
 
     for object in ${K8S_ROLLOUT:-}; do
-      kind="${object%%/*}"
-      [ "${kind}" = "deployment" ] || continue
+      res="$(rollout_resource "${object%%/*}")" || continue
       name="${object##*/}"
 
-      # 该 Deployment 引用的 ConfigMap：volumes[].configMap.name 与
+      # 该工作负载引用的 ConfigMap：volumes[].configMap.name 与
       # envFrom[].configMapRef.name。用 jsonpath 一次取两类，再去重。
-      refs="$(kubectl -n "${NAMESPACE}" get deploy "${name}" \
+      refs="$(kubectl -n "${NAMESPACE}" get "${res}" "${name}" \
         -o jsonpath='{.spec.template.spec.volumes[*].configMap.name}{"\n"}{.spec.template.spec.containers[*].envFrom[*].configMapRef.name}' \
         2>/dev/null | tr ' ' '\n' | grep -v '^$' | sort -u || true)"
 
@@ -203,7 +214,7 @@ if kubectl -n "${NAMESPACE}" get configmap >/dev/null 2>&1; then
 
       # 读当前注解值。⚠️ jsonpath 里含点的 key 必须转义（\.），否则返回空，
       # 会被误判成「未注入」而对每次都触发滚动。
-      current="$(kubectl -n "${NAMESPACE}" get deploy "${name}" \
+      current="$(kubectl -n "${NAMESPACE}" get "${res}" "${name}" \
         -o "jsonpath={.spec.template.metadata.annotations.cops\.vectorman\.cn/configmap-checksum}" \
         2>/dev/null || true)"
 
@@ -213,7 +224,7 @@ if kubectl -n "${NAMESPACE}" get configmap >/dev/null 2>&1; then
       fi
       log "  ${name}: checksum ${current:0:12}… → ${checksum:0:12}…"
       # patch podTemplate 而不是 annotate deploy：只有改 podTemplate 才会滚动
-      kubectl -n "${NAMESPACE}" patch deploy "${name}" --type=merge \
+      kubectl -n "${NAMESPACE}" patch "${res}" "${name}" --type=merge \
         -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"${CHECKSUM_ANNOTATION}\":\"${checksum}\"}}}}}" >/dev/null
     done
   fi
@@ -229,11 +240,10 @@ if [ -n "${SECRET_ENV:-}" ]; then
   secret_digest="$(sha256sum "${SECRETS_FILE}" | awk '{print $1}')"
 
   for object in ${K8S_ROLLOUT:-}; do
-    kind="${object%%/*}"
-    [ "${kind}" = "deployment" ] || continue
+    res="$(rollout_resource "${object%%/*}")" || continue
     name="${object##*/}"
 
-    current="$(kubectl -n "${NAMESPACE}" get deploy "${name}" \
+    current="$(kubectl -n "${NAMESPACE}" get "${res}" "${name}" \
       -o "jsonpath={.spec.template.metadata.annotations.cops\.vectorman\.cn/secret-checksum}" \
       2>/dev/null || true)"
 
@@ -242,7 +252,7 @@ if [ -n "${SECRET_ENV:-}" ]; then
       continue
     fi
     log "  ${name}: 密钥变化 ${current:0:12}… → ${secret_digest:0:12}…"
-    kubectl -n "${NAMESPACE}" patch deploy "${name}" --type=merge \
+    kubectl -n "${NAMESPACE}" patch "${res}" "${name}" --type=merge \
       -p "{\"spec\":{\"template\":{\"metadata\":{\"annotations\":{\"${SECRET_ANNOTATION}\":\"${secret_digest}\"}}}}}" >/dev/null
   done
 fi
