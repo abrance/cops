@@ -31,13 +31,13 @@
 | 应用 | 容器 | 镜像 | 说明 |
 | --- | --- | --- | --- |
 | `lems` | `lems`、`emsdevice` | `ghcr.chenby.cn/abrance/ems`、`ghcr.chenby.cn/abrance/emsdevice` | default（cloud2）上的旧 Compose 部署：EMS 主服务与 ess_demo Modbus 从站 |
-| `lems-cloud3` | `lems` | `ghcr.io/abrance/ems:v1.0.55` | cloud3（k8s），入口 `https://ems.xiaoyxq.top`；**有状态**，SQLite 与 Prometheus TSDB 在 PVC `cops/lems-data`（10Gi）；不部署 emsdevice |
+| `lems-cloud3` | `lems`、`emsdevice` | `ghcr.io/abrance/ems:v1.0.56`、`ghcr.io/abrance/emsdevice:v1.0.56` | cloud3（k8s），入口 `https://ems.xiaoyxq.top`；**有状态**，SQLite 与 Prometheus TSDB 在 PVC `cops/lems-data`（10Gi）；emsdevice 是 ess_demo Modbus 从站，lems 以 Service 名 `emsdevice:1502` 访问它 |
 | `model-ocr` | `model-ocr` | `ghcr.chenby.cn/abrance/modelman-ocr` | PP-OCR 文字识别服务（MNN/CPU）；已迁 cloud3（k8s），lems 经公网入口 `https://ocr.xiaoyxq.top` 调用；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `model-agent` | `model-agent` | `ghcr.io/abrance/model-agent` | 主工作台（Pi + 自托能力基线）；cloud3（k8s），入口 `https://ai.xiaoyxq.top`；**有状态**，组件目录与会话在 PVC `model-agent-data`；源码仓库 [abrance/pi-web](https://github.com/abrance/pi-web)（pi-web 的 fork） |
 | `omp-web` | `omp-web` | `ghcr.io/abrance/omp-web` | 第二个工作台（omp 实例）：浏览器里跑 omp 自己的 SDK；cloud3（k8s），入口 `https://omp.xiaoyxq.top`；**有状态**，agent 目录与工作目录在 PVC `omp-web-data`；源码仓库 [abrance/omp-box](https://github.com/abrance/omp-box) |
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
-| `vectorman` | 无（systemd） | GitHub Releases 静态二进制包 | GSE 采集链路的 6 个组件，native 部署，数据保留在 `/opt/vectorman` |
+| `vectorman` | `gse-server`、`dataserver`、`console`、`gse-agent`（DaemonSet） | `ghcr.io/abrance/vectorman-server`、`docker.io/library/vectorman-gse-agent`（节点本地导入） | GSE 采集链路：三个服务端组件 + 每节点一个采集 Agent；cloud3（k8s），入口 `https://vectorman.xiaoyxq.top`（Agent RPC 走 `:30710` NodePort）；**有状态**，sqlite/tsink/redb 在 `hostPath /opt/vectorman-k8s/*`；源码仓库 [abrance/vectorman](https://github.com/abrance/vectorman) |
 | `vikunja` | `vikunja` | `docker.io/vikunja/vikunja:2.7.0` | 待办/项目管理（自托管），cloud3（k8s），入口 `https://vikunja.xiaoyxq.top`；**无状态**：附件在 `environment/minio`、数据在 `environment/mysql8`；自带 MCP server（`/api/v2/mcp`），供 AI 客户端直接建单/查单 |
 | `openbao` | `openbao` | `quay.io/openbao/openbao` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
@@ -242,20 +242,9 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 - 需要 root 时，由 `native/deploy-native.sh` 用 `sudo -S` 提权；sudo 密码取 `DEPLOY_PASSWORD`，经 `SECRET_ENV` 下发到 `/opt/cops/secrets/<app>.env`，脚本读取后立即清除。
 - 幂等由脚本内的期望状态哈希保证：期望状态不变时不重启服务。
 
-以 `apps/vectorman/` 为参考实现：
-
-```text
-apps/vectorman/
-├── .env                    # 产物 URL + sha256、安装根目录
-├── app.conf                # DEPLOY_MODE=native、HEALTH_URLS、SECRET_ENV
-├── conf/                   # 期望运行时配置（仓库即事实源）
-│   ├── config.toml         # dataserver
-│   ├── gse-server.toml
-│   ├── gse-agent.toml
-│   └── console.toml
-└── native/
-    └── deploy-native.sh    # 下载校验 → 安装 → 迁移 → 重启 → 健康探测
-```
+> 当前仓库里没有 native 单元了：最后一个（`apps/vectorman/`）已于 2026-09 迁到
+> cloud3 的 k8s（见下表与本文件「k8s 部署模式」）。native 路径仍保留在
+> `scripts/deploy.sh` 里，`DEPLOY_MODE=native` 的单元按上述约定组织目录。
 
 ## k8s 部署模式
 
@@ -282,7 +271,7 @@ apps/<name>/
   - 内容变了会把哈希写进 podTemplate 注解触发滚动——**改了密钥但不重启，Pod 还跑旧值**，与 ConfigMap checksum 是同一套道理。
   - 密钥本身仍不进仓库：GitHub Secrets → `/opt/cops/secrets/<app>.env`（CI 全量覆盖，见下面「运行期密钥」）→ k8s Secret → 容器。
 - **状态数据**：单节点用 `hostPath`（简单、免二次搬迁），多节点或需要迁移能力时换 PVC（`local-path`）。两者都是「删 Pod 不丢数据」。`apps/model-logcluster` 用 PVC，`apps/vectorman` 用 hostPath。
-- **ConfigMap 变更触发滚动**：`kubectl apply` 改 ConfigMap **不会**重启引用它的 Pod（kubelet 会同步文件内容，但进程不会重读配置——部署「成功」了却还跑旧配置，健康探测也看不出来）。`deploy-k8s.sh` 在 apply 后会把每个 Deployment 引用的 ConfigMap 内容哈希写进 **podTemplate 注解**（`cops.vectorman.cn/configmap-checksum`），内容变 → 注解变 → 自动滚动；内容不变则不滚动（幂等）。**只有本单元 `k8s.yaml` 里声明的 ConfigMap 参与计算**，不碰别的单元。无 ConfigMap 的单元完全 no-op。
+- **ConfigMap 变更触发滚动**：`kubectl apply` 改 ConfigMap **不会**重启引用它的 Pod（kubelet 会同步文件内容，但进程不会重读配置——部署「成功」了却还跑旧配置，健康探测也看不出来）。`deploy-k8s.sh` 在 apply 后会把每个 Deployment / DaemonSet 引用的 ConfigMap 内容哈希写进 **podTemplate 注解**（`cops.vectorman.cn/configmap-checksum`），内容变 → 注解变 → 自动滚动；内容不变则不滚动（幂等）。**只有本单元 `k8s.yaml` 里声明的 ConfigMap 参与计算**，不碰别的单元。无 ConfigMap 的单元完全 no-op。
 
 k8s 单元的 `app.conf` 字段：
 
