@@ -219,6 +219,11 @@ spec:
   replicas: 1
   strategy:
     type: Recreate
+  # 回放一次 1.2G ts + 543M kv 实测要 40 分钟以上。Deployment 默认
+  # progressDeadlineSeconds=600 一到就报 ProgressDeadlineExceeded，
+  # `kubectl rollout status` 立刻判死（app.conf 的 HEALTH_TIMEOUT=6600 管不到它），
+  # 2026-11-09 的部署就是这样红的。给到 7200s，与 HEALTH_TIMEOUT 6600 对齐留余量。
+  progressDeadlineSeconds: 7200
   selector:
     matchLabels:
       app: dataserver
