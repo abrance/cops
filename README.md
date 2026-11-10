@@ -33,14 +33,12 @@
 | `lems` | `lems`、`emsdevice` | `ghcr.chenby.cn/abrance/ems`、`ghcr.chenby.cn/abrance/emsdevice` | default（cloud2）上的旧 Compose 部署：EMS 主服务与 ess_demo Modbus 从站 |
 | `lems-cloud3` | `lems`、`emsdevice` | `ghcr.io/abrance/ems:v1.0.56`、`ghcr.io/abrance/emsdevice:v1.0.56` | cloud3（k8s），入口 `https://ems.xiaoyxq.top`；**有状态**，SQLite 与 Prometheus TSDB 在 PVC `cops/lems-data`（10Gi）；emsdevice 是 ess_demo Modbus 从站，lems 以 Service 名 `emsdevice:1502` 访问它 |
 | `model-ocr` | `model-ocr` | `ghcr.chenby.cn/abrance/modelman-ocr` | PP-OCR 文字识别服务（MNN/CPU）；已迁 cloud3（k8s），lems 经公网入口 `https://ocr.xiaoyxq.top` 调用；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
-| `model-agent` | `model-agent` | `ghcr.io/abrance/model-agent` | 主工作台（Pi + 自托能力基线）；cloud3（k8s），入口 `https://ai.xiaoyxq.top`；**有状态**，组件目录与会话在 PVC `model-agent-data`；源码仓库 [abrance/pi-web](https://github.com/abrance/pi-web)（pi-web 的 fork） |
-| `omp-web` | `omp-web` | `ghcr.io/abrance/omp-web` | 第二个工作台（omp 实例）：浏览器里跑 omp 自己的 SDK；cloud3（k8s），入口 `https://omp.xiaoyxq.top`；**有状态**，agent 目录与工作目录在 PVC `omp-web-data`；源码仓库 [abrance/omp-box](https://github.com/abrance/omp-box) |
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | `gse-server`、`dataserver`、`console`、`gse-agent`（DaemonSet） | `ghcr.io/abrance/vectorman-server`、`docker.io/library/vectorman-gse-agent`（节点本地导入） | GSE 采集链路：三个服务端组件 + 每节点一个采集 Agent；cloud3（k8s），入口 `https://vectorman.xiaoyxq.top`（Agent RPC 走 `:30710` NodePort）；**有状态**，sqlite/tsink/redb 在 `hostPath /opt/vectorman-k8s/*`；源码仓库 [abrance/vectorman](https://github.com/abrance/vectorman) |
 | `openbao` | `openbao` | `quay.io/openbao/openbao` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
-单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`model-ocr`/`model-agent`/`omp-web`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio`/`mysql8` 在 `cloud3`，其余在 `default`。
+单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`model-ocr`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio`/`mysql8` 在 `cloud3`，其余在 `default`。
 
 ## 已纳管环境组件
 
@@ -108,9 +106,6 @@
 | `PTDOC_DATA_KEY` | 是 | `ptdoc` 运行期密钥，用于加解密七牛 SecretKey；部署时下发到 `/opt/cops/secrets/ptdoc.env` |
 | `QINIU_ACCESS_KEY` | 是 | LEMS 七牛云 Access Key；部署时下发到对应单元的 `/opt/cops/secrets/<名字>.env` |
 | `QINIU_SECRET_KEY` | 是 | LEMS 七牛云 Secret Key；部署时下发到对应单元的 `/opt/cops/secrets/<名字>.env` |
-| `AGENT_PROVIDER_API_KEY` | 是 | `model-agent` 的大模型 provider api key；下发到 `/opt/cops/secrets/model-agent.env`，再由部署脚本变成 k8s Secret 注入容器 |
-| `PI_WEB_PASSWORD` | 是 | `model-agent` 与 `omp-web` 的平台入口密码（单密码，浏览器登录与 API Basic 认证共用）；两个单元**用同一个值**（有意选择，见 [modelman docs/omp-instance.md](https://github.com/abrance/modelman/blob/main/docs/omp-instance.md)） |
-| `OMP_WEB_PASSWORD` | 否（不单独配） | 不是独立的 GitHub secret：`deploy.yml` 把 `secrets.PI_WEB_PASSWORD` 映射成它，用于 `omp-web` 单元 |
 
 主机凭据按**每台主机一组**配置，名字登记在 `hosts.yaml`，值在 `deploy.yml` 的 `env:` 段映射（GitHub 不支持按变量名动态读 secret）。当前两台：
 
@@ -146,7 +141,7 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 > GitHub Actions 不允许按变量名动态读 secret 或 variable。
 >
 > 同一份值被多个单元复用时（如 MinIO root 口令 = mysql8 的 root 口令），只建一个
-> GitHub secret，在 env 段映射成两个不同名字（参见 `OMP_WEB_PASSWORD` 与
+> GitHub secret，在 env 段映射成两个不同名字（参见 `MYSQL_ROOT_PASSWORD` 与
 > `MINIO_ROOT_PASSWORD`），避免改一处忘了另一处导致两侧凭据漂移。
 
 ## 部署流程
@@ -332,8 +327,6 @@ scripts/check-registries.sh apps/lems default
 
 # k8s 单元的渲染校验（未定义变量、残留 ${...}、缺 apiVersion/kind 都会失败）
 scripts/render-k8s.py apps/model-ocr > /dev/null
-scripts/render-k8s.py apps/model-agent > /dev/null
-scripts/render-k8s.py apps/omp-web > /dev/null
 scripts/render-k8s.py apps/vectorman > /dev/null
 
 # helm chart 单元额外校验（chart 可解析、values 合法、test 资源被过滤）
