@@ -12,8 +12,9 @@
 #       三个容器只是入口命令不同。
 #
 # 为什么 Recreate 而不是 RollingUpdate：
-#   sqlite（gse-server）、tsink + redb（dataserver）、apps.json（console）都是
-#   单写者状态，滚动更新会让新旧两个 Pod 同时持有同一份状态文件。
+#   sqlite（gse-server）、apps.json（console）是单写者状态，滚动更新会让新旧两个 Pod
+#   同时持有同一份状态文件。dataserver 的时序/键值已外置（VM + Redis，见 dataserver
+#   容器的 DATASERVER_* env），本地 hostPath 只留日志索引与少量残留。
 #
 # 为什么数据走 hostPath 而不是 PVC：
 #   单节点 k3s，hostPath 最直接，也避免 PVC 迁移带来的二次搬迁。
@@ -242,6 +243,33 @@ spec:
           env:
             - name: DP_DATA_PATH
               value: /app/dataserver/data
+            # ── 外置存储后端（2026-11-10 落地）────────────────────────────────
+            # 不带这些变量时 dataserver 走本地 tsink(WAL) + redb；@ 7 项是从线上
+            # 手工注入的漂移状态回流到仓库——此前仓库里一个字都没有，直接部署会把
+            # 外置存储配置抹掉（重新退回本地 tsink/redb）。
+            # 已核实：redis-test/statefulset/redis 1/1（8Gi local-path PVC）；
+            # victoria-metrics ns 的 vminsert 8480 / vmselect 8481。
+            # 原始 URL 不含密钥，可以入库；两个密码走下面的 secretKeyRef。
+            - name: DATASERVER_KV_BACKEND
+              value: redis
+            - name: DATASERVER_REDIS_URL
+              value: redis://redis.redis-test.svc.cluster.local:6379/0
+            - name: DATASERVER_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: dataserver-redis
+                  key: REDIS_PASSWORD
+            - name: DATASERVER_TS_BACKEND
+              value: victoriametrics
+            - name: DATASERVER_VM_INSERT_URL
+              value: http://vmcluster-victoria-metrics-cluster-vminsert.victoria-metrics.svc:8480
+            - name: DATASERVER_VM_SELECT_URL
+              value: http://vmcluster-victoria-metrics-cluster-vmselect.victoria-metrics.svc:8481
+            - name: DATASERVER_VM_DELETE_AUTH_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: dataserver-vm
+                  key: VM_DELETE_AUTH_KEY
           ports:
             - name: sql
               containerPort: 8081
@@ -266,14 +294,18 @@ spec:
           # 启动探针成功前 liveness/readiness 不跑。
           # 预算 100 分钟：WAL 一旦积压（如后台 flush 报错期间），回放 32MB WAL 要十几分钟。
           # 2026-11-09 实测：数据涨到 kv.redb 569MB + ts 1.2GB 后，冷启动 20 分钟仍未就绪，
-          # 120×10s 的旧预算会被 kubelet SIGKILL → 新一轮回放从头开始 → 永远起不来（实测 restartCount 已 +1）。
-          # 600×10s = 100 分钟，给足一次完整回放；healthz 在回放期间不开放，探针只是为了别被误杀。
+          # 120×10s 的旧预算会被 kubelet SIGKILL → 新一轮回放从头开始 → 永远起不到（实测 restartCount 已 +1）。
+          # 3600×10s = 10 小时（原 #103 的改动并入）：线上 2026-11-09 曾被手工调到 3600，
+          # 但后续一次 apply 又把它改回 600；现在仓库与线上统一到 3600。
+          # 这个数字只是「别被误杀」的上界，不是目标耗时。
+          # 2026-11-10 切外置存储后启动不再回放 WAL，实际 Ready 是秒级（见 docs/external-storage.md §9）；
+          # 保留这个上界只是为了 tsink 后端的回滚路径不被误杀。
           startupProbe:
             httpGet:
               path: /health
               port: sql
             periodSeconds: 10
-            failureThreshold: 600
+            failureThreshold: 3600
           livenessProbe:
             httpGet:
               path: /health
