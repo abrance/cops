@@ -91,8 +91,7 @@ esac
 | `openbao/` 命名空间 | OpenBao 密钥管理，仓库第一个 helm chart 单元（期望状态 = `apps/openbao/values.yaml` 渲染官方 chart + `k8s.yaml`，CI 全自动，见 README「helm chart 单元」）；对象：StatefulSet `openbao`（OnDelete 策略）+ 内置 PVC `data-openbao-openbao-0` 10Gi + ConfigMap/ServiceAccount/ClusterRoleBinding + 2×IngressRoute + `Middleware redirect-https`；入口 `https://bao.xiaoyxq.top`，UI 在 `/ui/` |
 | `demo/`（whoami deploy+svc、`IngressRoute whoami-http`/`whoami-tls`、`Middleware redirect-https`） | **临时验证用**，可作为新服务模板；不要了就 `kubectl delete ns demo` |
 | `minio/` 命名空间 | 对象存储单元 `environment/minio`（CI 部署）：StatefulSet `minio` + Service + 4×IngressRoute（API 与控制台各 web/websecure 两条）+ `Middleware redirect-https`；数据在宿主机 `/opt/minio/data`（hostPath）。迁移前它是手工建的 `minio-test/`（PVC data-minio-0 + 两条手工 IngressRoute），搬迁步骤见下一小节 |
-| `mysql8/` 命名空间 | 通用 MySQL 8 单元 `environment/mysql8`（CI 部署）：StatefulSet `mysql` + Service `mysql`；数据在宿主机 `/opt/mysql8/data`（hostPath），无 HTTP 接口。迁移前它是 vikunja 手工部署的 `vikunja/mysql`（PVC `data-mysql-0` + Secret `vikunja-secret`），搬迁步骤见下一小节 |
-| `vikunja/` 命名空间 | 待办/项目管理单元 `apps/vikunja`（CI 部署）：ConfigMap `vikunja-config` + Deployment + Service + 2×IngressRoute + `Middleware redirect-https`；入口 `https://vikunja.xiaoyxq.top`。**无状态**：附件在 `minio/`、数据在 `mysql8/` |
+| `mysql8/` 命名空间 | 通用 MySQL 8 单元 `environment/mysql8`（CI 部署）：StatefulSet `mysql` + Service `mysql`；数据在宿主机 `/opt/mysql8/data`（hostPath），无 HTTP 接口。迁移前它是手工部署的 MySQL（PVC `data-mysql-0` + Secret，随旧命名空间已删），搬迁步骤见 [存档](archive/vikunja-removed-20261110.md) |
 | `186.244.201.55.sslip.io` 的证书 | 已签发成功，作为端到端验证证据 |
 
 新增服务的标准三步：DNS 加 A 记录指向 `186.244.201.55` → 确认解析生效 → 照抄 demo 的两条 IngressRoute（换 Host）。**顺序不能反**，反了就是签发 404 失败，会撞 Let's Encrypt 限流（同域名每小时 5 次失败 / 每周 5 张重复证书）。
@@ -139,14 +138,14 @@ Secret `minio-secret`、两条只带 `websecure` 的 IngressRoute。纳入 cops 
    ```
 
 2. 删掉旧的两条 IngressRoute（公网 API/控制台短暂不可用，**集群内部访问不受影响**，
-   vikunja 走 Service DNS 而不是公网入口）：
+   当时的应用消费者走 Service DNS 而不是公网入口）：
 
    ```bash
    kubectl -n minio-test delete ingressroute minio-api minio-console
    ```
 
 3. 合入 `environment/minio` 单元格（PR1）→ CI 建出 ns `minio` 并拉起新实例。
-   新实例起来后是**空库**，vikunja 此刻还指着旧的 `minio-test`，附件仍可读。
+   新实例起来后是**空库**，当时的消费者还指着旧的 `minio-test`，附件仍可读。
 
 4. 在新 Pod 里把旧实例的每个 bucket 同步过来（`mc mirror` 会按需建目标 bucket）。
    在同一个集群里可以直接用 Service DNS 访问旧实例，不需要经过公网：
@@ -162,7 +161,7 @@ Secret `minio-secret`、两条只带 `websecure` 的 IngressRoute。纳入 cops 
    同步后逐桶核对对象数与总量（`mc du old/<bucket>` 对 `mc du local/<bucket>`），
    并保留一份对象清单文本（`mc ls --recursive` 输出）作为回滚凭据。
 
-5. 把 vikunja 的 S3 endpoint 从 `http://minio.minio-test.svc.cluster.local:9000` 改成
+5. 把消费方的 S3 endpoint 从 `http://minio.minio-test.svc.cluster.local:9000` 改成
    `http://minio.minio.svc.cluster.local:9000`（属于 PR2 的内容），重启后验一次附件下载。
 
 6. 确认无误后再删旧资源：先 `kubectl -n minio-test get all` 留一份快照，再
@@ -170,136 +169,15 @@ Secret `minio-secret`、两条只带 `websecure` 的 IngressRoute。纳入 cops 
    root 凭据必须同时进 GitHub Secrets 的原因（否则下次重建就找不回凭据）。
 
 已知代价（有意接受）：控制台入口仍对公网开放，且登录用的就是 root 账号；root 口令与
-vikunja 的 S3 AK/SK 同值（避免两侧漂移）。若要收紧，可去掉控制台的 IngressRoute 改用
+mysql8 的 root 口令同值（避免两侧漂移）。若要收紧，可去掉控制台的 IngressRoute 改用
 `kubectl port-forward`，或给它加 Traefik basicauth 中间件。
 
-### MySQL 与 vikunja 特化：从 `vikunja/` 的手工部署迁入 `environment/mysql8` 与 `apps/vikunja`
+### Vikunja（已下线）
 
-迁移前 vikunja 与它的数据库都是手工部署的：ns `vikunja`、StatefulSet `mysql` + PVC
-`data-mysql-0`（2Gi local-path）、Secret `vikunja-secret`（DB 口令 / session 密钥 / S3 AK/SK）。
-纳入 cops 后变成两个单元：
-
-| 单元 | 命名空间 | 存储 | 说明 |
-| --- | --- | --- | --- |
-| `environment/mysql8` | `mysql8` | hostPath `/opt/mysql8/data` | **通用** MySQL 8，只跑 root 账号，库与账号由使用方创建；Service 名仍是 `mysql` |
-| `apps/vikunja` | `vikunja` | 无（无状态） | ConfigMap + Deployment + Service + 2×IngressRoute；附件在 `minio/` |
-
-**顺序陷阱（必须先看）**：CI 解析单元时 `apps/` 排在 `environment/` 之前。若直接合并 PR
-让 CI 一次性部署，vikunja 会先被滚动到新的 DB 地址，而那时 mysql8 要么还没起来、要么是空库——
-vikunja 启动会自动跑 migration，把空库建成新 schema，之后导入 dump 必然冲突。
-所以先手工起 mysql8 并导数据，再让 CI 切 vikunja 的连接串：
-
-1. 手工建 mysql8（等价于 CI 会做的事，后续 CI apply 幂等）：
-
-   ```bash
-   export KUBECONFIG=$HOME/.kube/config
-   cd /tmp && python3 -c '
-   import re
-   docs=[d for d in re.split(r"(?m)^---[ \t]*$", open("rendered.yaml").read()) if d.strip()]
-   kinds={"Namespace","StatefulSet","Service"}
-   sel=[d for d in docs if re.search(r"(?m)^kind: (\\S+)", d).group(1) in kinds]
-   open("mysql8.yaml","w").write("---\\n"+"\\n---\\n".join(sel))'
-   # Secret 按部署脚本的规则手工建一次（值取现有 vikunja 的 DB 口令，不落盘）
-   kubectl -n mysql8 create secret generic mysql8-secrets \
-     --from-literal=MYSQL_ROOT_PASSWORD="$DB_PASSWORD" --dry-run=client -o yaml | kubectl apply -f -
-   kubectl apply -f mysql8.yaml
-   kubectl -n mysql8 rollout status statefulset/mysql --timeout=300s
-   ```
-
-2. 冻结写入：`kubectl -n vikunja scale deploy/vikunja --replicas=0`
-3. 导旧库（沿用迁移到 cloud3 时验证过的手法）：
-
-   ```bash
-   kubectl -n vikunja exec mysql-0 -- mysqldump -uroot -p"$OLD_ROOT_PW" \
-     --single-transaction --routines --triggers --default-character-set=utf8mb4 vikunja > vikunja.sql
-   ```
-
-4. 在 mysql8 里建库建号（通用单元不预建任何库），再导入：
-
-   ```bash
-   kubectl -n mysql8 exec -i mysql-0 -- mysql -uroot -p"$DB_PASSWORD" <<'SQL'
-   CREATE DATABASE IF NOT EXISTS vikunja CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-   CREATE USER IF NOT EXISTS 'vikunja'@'%' IDENTIFIED BY '<与 SECRET_ENV 里 VIKUNJA_DATABASE_PASSWORD 同值>';
-   GRANT ALL PRIVILEGES ON vikunja.* TO 'vikunja'@'%'; FLUSH PRIVILEGES;
-   SQL
-   kubectl -n mysql8 exec -i mysql-0 -- mysql -uroot -p"$DB_PASSWORD" vikunja < vikunja.sql
-   ```
-
-5. 校验：`users` / `projects` / `tasks` / `files` / `labels` 等表行数与旧库逐张对齐，中文取
-   `hex(title)` 比对，口令哈希聚合值比对（老用户密码必须还能登录）。
-6. 合并 PR2 → CI 同时 apply 两个单元：mysql8 是幂等 apply，vikunja 切到
-   `mysql.mysql8.svc.cluster.local:3306` 与 `http://minio.minio.svc.cluster.local:9000`。
-7. 验收：`/api/v1/info` 返回 v2.7.0、老账号可登录、附件可下载（对象 key 是 `files/<附件 id>`）、
-   `deploy-k8s.sh` 的两道探活均通过。
-8. 留证后再删旧资源：`mysqldump` 的 SQL、对象清单（`mc ls -r`）、旧 PVC 快照，存云主机
-   `~/vikunja-backup-<日期>/`；确认后才 `kubectl -n vikunja delete sts mysql`（PVC 需显式删）、
-   `kubectl delete ns minio-test`。
-
-两点与 MinIO 一致的口径：
-
-- **凭据只存在 GitHub Secrets 里**（`COMMON_SIMPLE_PASSWORD` 与仓库 variable `COMMON_ADMIN_USERNAME`）。
-  删掉旧 ns 后本地的 `vikunja-secret` / `minio-secret` 一起消失，凭据若不入库就找不回来了。
-- 本次迁移**不动行为配置**：`VIKUNJA_SERVICE_ENABLEREGISTRATION` 保持 `true`（公网实例建议改 false，
-  但要单独一件事做），DNS 不动，镜像 tag 不动。
-
-### Vikunja 特化：日常改动与升级
-
-- 配置改 `apps/vikunja/k8s.yaml` 的 ConfigMap（非敏感）或 GitHub Secrets（DB 口令 / session 密钥 /
-  S3 凭据）；`deploy-k8s.sh` 会把 ConfigMap 与 Secret 的内容哈希写进 podTemplate 注解，
-  内容变才滚动，幂等。改了 `VIKUNJA_SERVICE_SECRET` 会让所有已登录 session 失效。
-- 升级镜像：改 `apps/vikunja/.env` 的 `VIKUNJA_IMAGE_TAG` 后合并。启动时会自动跑 DB migration，
-  **migration 不可回退**：回滚镜像不会回滚 schema，跨大版本升级前先留一份 `mysqldump`。
-- 附件：对象 key 带 `files/` 前缀（`files.basepath`），手工往 MinIO 里放对象时必须带前缀，
-  否则附件 404 且 `vikunja doctor` 也不会报错。
-- 自带 MCP server 在 `/api/v2/mcp`（streamable HTTP），AI 客户端用它建单/查单；
-  长期 token 在 vikunja 的「设置 → API Tokens」里签发，**不要**写进本仓库。
-
-### Vikunja 备份与恢复
-
-**现状（重要）**：`vikunja` 的数据只有在线副本——MySQL 在宿主机的 `/opt/mysql8/data`，附件在
-`/opt/minio/data`，两边的旧 PVC 都已删。任何一份挂了都只能靠下面的备份重建。
-
-| 产物 | 位置 | 说明 |
-| --- | --- | --- |
-| 数据库基线 | `/opt/cops/backup/vikunja-2026-10-15/vikunja-2.7.0-20261015.sql`（md5 `c86d23a94d92285fa13d8de9970a4659`） | 2026-10-15 迁移后立即导的逻辑备份，已做过一次恢复演练 |
-| 对象清单 | 同目录 `minio-objects-20261015.json` | `mc ls --recursive --json` 全量清单 |
-| 集群快照 | 同目录 `cluster-snapshot-20261015.txt`、`hostpath-du-20261015.txt` | 三个 ns 的对象列表与 hostPath 占用 |
-
-更早的备份（云主机 `~/vikunja-backup/vikunja-2.2.2-20261013.sql`，2026-10-13 从本机迁到
-cloud3 时留的）已按 2026-10-15 的决定清理，本目录这现在是**唯一一份库备份**，
-未建每日 dump 前请勿删除。
-
-导一份新的基线（在 cloud3 上执行）：
-
-```bash
-export KUBECONFIG=$HOME/.kube/config
-D=/opt/cops/backup/vikunja-$(date +%F); mkdir -p "$D"
-kubectl -n mysql8 exec mysql-0 -c mysql -- sh -c \
-  'mysqldump -uroot -p"$MYSQL_ROOT_PASSWORD" --single-transaction --routines --triggers \
-     --default-character-set=utf8mb4 vikunja' > "$D/vikunja-$(date +%F).sql"
-md5sum "$D"/*.sql
-kubectl -n minio exec minio-0 -c minio -- sh -c \
-  'mc alias set chk http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null && \
-   mc ls --recursive --json chk' > "$D/minio-objects-$(date +%F).json"
-```
-
-**导完必做恢复演练**（不然等于没备份）——导到临时库比行数，比对完立即删：
-
-```bash
-kubectl -n mysql8 exec mysql-0 -c mysql -- sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" \
-  -e "drop database if exists vikunja_verify; create database vikunja_verify character set utf8mb4 collate utf8mb4_unicode_ci;"'
-kubectl -n mysql8 exec -i mysql-0 -c mysql -- sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" vikunja_verify' < "$D/vikunja-$(date +%F).sql"
-# 逐张表 COUNT(*) 对齐后：
-kubectl -n mysql8 exec mysql-0 -c mysql -- sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "drop database vikunja_verify;"'
-```
-
-恢复口径：MySQL 用 dump 建库建号再导入（`vikunja` 库、`vikunja@%` 账号）；附件把对象放回
-`/opt/minio/data/<bucket>/<key>`（注意对象 key 带 `files/` 前缀）；vikunja 本身无状态，
-`kubectl -n vikunja rollout restart deploy/vikunja` 即可。
-
-**mysql8 的账号口径**：`root@%`（CI 下发的 `MYSQL_ROOT_PASSWORD`）、`xiaoy@%`（2026-10-15 建的
-管理账号，口令与 root 同值，对应 `COMMON_ADMIN_USERNAME`）、以及各应用自己的账号
-（如 `vikunja@%`）。通用单元不预建任何库，新应用接入时自行建库建号。
+2026-11-10 按用户决定彻底卸载：删掉命名空间 `vikunja`、MySQL 库 `vikunja` 与账号 `vikunja@%`、
+MinIO bucket `vikunja`、仓库单元 `apps/vikunja/` 与 CI env 映射，DNS `vikunja.xiaoyxq.top` 一并撤销。
+迁移（从手工部署搬进 `environment/mysql8` + `apps/vikunja`）、日常升级与备份恢复的历史记录存档在
+[archive/vikunja-removed-20261110.md](archive/vikunja-removed-20261110.md)。
 
 ## 五、网络事实
 
@@ -375,5 +253,5 @@ sudo chown -R xiaoy:xiaoy /opt/cops     # CI 以 xiaoy 身份同步单元目录�
 - 泛域名证书（`*.xiaoyxq.top`）未启用。方案：Traefik ACME DNS-01 + lego 的 `tencentcloud` provider（`TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`），好处是以后加服务连 DNS 都不用动。密钥只放 k8s Secret，**不入库**。
 - `demo` 命名空间是验证残留（whoami + sslip.io 证书），可按需删除：`kubectl delete ns demo`。
 - 旧主机的 `model-logcluster_state` 卷按计划保留一周（到 2026-10-02）后再删；迁移时的状态快照备份在 cloud3 的 `/opt/cops/backup/model-logcluster-state-2026-09-25.tgz`（sha256 `377f2e7b…`）。
-- **`vikunja` / `mysql8` 目前没有定时备份**：只有 2026-10-15 的手工基线（见「Vikunja 备份与恢复」）。两条路径可选：给它加一个每日 `mysqldump` 的 CronJob（落 `/opt/cops/backup/`，需轮换）、或继续手工导。触发条件：数据开始明显增长，或发生过一次“想回滚但没 dump”。
-- MinIO 控制台入口仍对公网开放（登录用 root 账号，口令与 vikunja 的 S3 凭据同值）。收紧方式：去掉控制台 IngressRoute 改 `kubectl port-forward`，或加 Traefik basicauth 中间件。
+- **`mysql8` 目前没有定时备份**：库与账号由各应用自行创建，备份口径随应用而定。可选：给需要的库加一个每日 `mysqldump` 的 CronJob（落 `/opt/cops/backup/`，需轮换），或继续手工导。触发条件：数据开始明显增长，或发生过一次“想回滚但没 dump”。
+- MinIO 控制台入口仍对公网开放（登录用 root 账号，口令与 mysql8 的 root 口令同值）。收紧方式：去掉控制台 IngressRoute 改 `kubectl port-forward`，或加 Traefik basicauth 中间件。
