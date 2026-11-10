@@ -12,7 +12,7 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 
 例外只有两类，都必须在 `.env` 注释里说明理由：
 
-- 上游官方镜像直接引用其原始源（如 `environment/ptdoc-qdrant` 的 `docker.io/qdrant/qdrant`，云主机已配 Docker Hub 内网 mirror；cloud3 上的 `environment/minio`、`apps/vikunja` 与 `environment/mysql8` 同理，直连 `docker.io`）。
+- 上游官方镜像直接引用其原始源（如 `environment/ptdoc-qdrant` 的 `docker.io/qdrant/qdrant`，云主机已配 Docker Hub 内网 mirror；cloud3 上的 `environment/minio` 与 `environment/mysql8` 同理，直连 `docker.io`）。
 - tag 形状以上游实际发布为准：上游可能不带 `v` 前缀（如 ptdoc 网关的 `1.0.6`），不要为了统一而改写成仓库里不存在的 tag。
 
 当前镜像地址由各部署单元目录下的 `.env` 文件直接声明，Compose 文件只负责把镜像名和版本 tag 拼接成最终引用。不要只修改文档示例而遗漏 `.env` 中的实际部署值。
@@ -30,7 +30,6 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 | `apps/model-logcluster` | `model-logcluster` | `MODEL_LOGCLUSTER_IMAGE` + `MODEL_LOGCLUSTER_IMAGE_TAG` | `ghcr.chenby.cn/abrance/modelman-logcluster:v0.1.1-4c4f4e1` |
 | `environment/minio` | `minio` | `MINIO_IMAGE` + `MINIO_IMAGE_TAG` | `docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5` |
 | `environment/mysql8` | `mysql` | `MYSQL_IMAGE` + `MYSQL_IMAGE_TAG` | `docker.io/library/mysql:8.4` |
-| `apps/vikunja` | `vikunja` | `VIKUNJA_IMAGE` + `VIKUNJA_IMAGE_TAG` | `docker.io/vikunja/vikunja:2.7.0` |
 
 配置来源：
 

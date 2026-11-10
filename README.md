@@ -38,18 +38,17 @@
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | `gse-server`、`dataserver`、`console`、`gse-agent`（DaemonSet） | `ghcr.io/abrance/vectorman-server`、`docker.io/library/vectorman-gse-agent`（节点本地导入） | GSE 采集链路：三个服务端组件 + 每节点一个采集 Agent；cloud3（k8s），入口 `https://vectorman.xiaoyxq.top`（Agent RPC 走 `:30710` NodePort）；**有状态**，sqlite/tsink/redb 在 `hostPath /opt/vectorman-k8s/*`；源码仓库 [abrance/vectorman](https://github.com/abrance/vectorman) |
-| `vikunja` | `vikunja` | `docker.io/vikunja/vikunja:2.7.0` | 待办/项目管理（自托管），cloud3（k8s），入口 `https://vikunja.xiaoyxq.top`；**无状态**：附件在 `environment/minio`、数据在 `environment/mysql8`；自带 MCP server（`/api/v2/mcp`），供 AI 客户端直接建单/查单 |
 | `openbao` | `openbao` | `quay.io/openbao/openbao` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
-单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`model-ocr`/`model-agent`/`omp-web`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio`/`mysql8`/`vikunja` 在 `cloud3`，其余在 `default`。
+单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`model-ocr`/`model-agent`/`omp-web`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio`/`mysql8` 在 `cloud3`，其余在 `default`。
 
 ## 已纳管环境组件
 
 | 组件 | 容器 | 镜像 | 说明 |
 | --- | --- | --- | --- |
 | `ptdoc-qdrant` | `ptdoc-qdrant`、`ptdoc-qdrant-gateway` | `docker.io/qdrant/qdrant`、`ghcr.chenby.cn/abrance/ptdoc-qdrant-gateway` | ptdoc 的知识库：Qdrant 向量库 + 本地向量化网关；数据保留在 `/opt/ptdoc-qdrant`；`apps/ptdoc` 依赖它 |
-| `minio` | `minio` | `docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5` | 对象存储（S3 兼容）；cloud3（k8s），入口 `https://minio.186.244.201.55.sslip.io`（API）与 `https://minio-console.186.244.201.55.sslip.io`（控制台）；**有状态**，数据在宿主机 `/opt/minio/data`（hostPath）；`apps/vikunja` 的附件存在这里 |
-| `mysql8` | `mysql` | `docker.io/library/mysql:8.4` | **通用** MySQL 8（不属于单个应用）：只跑 root 账号，库与账号由使用方按需创建；cloud3（k8s）；**有状态**，数据在宿主机 `/opt/mysql8/data`（hostPath）；`apps/vikunja` 的库在这里 |
+| `minio` | `minio` | `docker.io/bitnamilegacy/minio:2025.7.23-debian-12-r5` | 对象存储（S3 兼容）；cloud3（k8s），入口 `https://minio.186.244.201.55.sslip.io`（API）与 `https://minio-console.186.244.201.55.sslip.io`（控制台）；**有状态**，数据在宿主机 `/opt/minio/data`（hostPath） |
+| `mysql8` | `mysql` | `docker.io/library/mysql:8.4` | **通用** MySQL 8（不属于单个应用）：只跑 root 账号，库与账号由使用方按需创建；cloud3（k8s）；**有状态**，数据在宿主机 `/opt/mysql8/data`（hostPath） |
 
 环境组件的规则与 apps 一致，额外几条：
 
@@ -146,7 +145,7 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 > 即 MinIO root 用户名）。两接都在 `deploy.yml` 的「下发运行期密钥」env 段静态映射，
 > GitHub Actions 不允许按变量名动态读 secret 或 variable。
 >
-> 同一份值被多个单元复用时（如 MinIO root 口令 = vikunja 的 S3 AK/SK），只建一个
+> 同一份值被多个单元复用时（如 MinIO root 口令 = mysql8 的 root 口令），只建一个
 > GitHub secret，在 env 段映射成两个不同名字（参见 `OMP_WEB_PASSWORD` 与
 > `MINIO_ROOT_PASSWORD`），避免改一处忘了另一处导致两侧凭据漂移。
 
