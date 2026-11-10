@@ -145,6 +145,8 @@ if [ -n "${SECRET_ENV:-}" ]; then
     | kubectl apply -f - >/dev/null
 fi
 
+# 记录本次 apply 的时间：用来把「本次部署的失败」与「上一次留下的条件」区分开。
+APPLIED_EPOCH="$(date -u +%s)"
 log "应用期望状态到命名空间 ${NAMESPACE}"
 if ! kubectl apply -f "${RENDERED}"; then
   log "kubectl apply 失败"
@@ -274,12 +276,60 @@ if [ -n "${SECRET_ENV:-}" ]; then
   done
 fi
 
+# ── 陈旧的 ProgressDeadlineExceeded ───────────────────────────────────────────
+#
+# 现象（2026-11-09 #101 实测）：dataserver 早已超过旧的 progressDeadlineSeconds，
+# Deployment 的 Progressing 条件被钉成 reason=ProgressDeadlineExceeded。此后只改
+# spec.progressDeadlineSeconds（podTemplate 不变 → 不产生新 ReplicaSet）时，Kubernetes
+# **不会**清掉这个条件，`kubectl rollout status` 一调用就立刻回报
+# `error: deployment "dataserver" exceeded its progress deadline`，几秒内判死本次部署。
+# 看起来像本次改动导致失败，实际上 Pod 根本没被碰过、真实状态没被读到。
+#
+# 处理：条件时间戳早于本次 apply → 判定为残留条件，摘掉它再按对象自己的
+# progressDeadlineSeconds 等一次。不调整任何超时预算。
+stale_progress_deadline() {  # <object>；0 = 是残留条件且已清除
+  local object="$1" res name cond reason cond_ts cond_epoch
+  [ "${object%%/*}" = "deployment" ] || return 1
+  res="$(rollout_resource deployment)" || return 1
+  name="${object##*/}"
+  cond="$(kubectl -n "${NAMESPACE}" get "${res}" "${name}" \
+    -o jsonpath='{range .status.conditions[?(@.type=="Progressing")]}{.reason}{"|"}{.lastUpdateTime}{end}' \
+    2>/dev/null || true)"
+  [ -n "${cond}" ] || return 1
+  reason="${cond%%|*}"
+  cond_ts="${cond##*|}"
+  [ "${reason}" = "ProgressDeadlineExceeded" ] || return 1
+  cond_epoch="$(date -u -d "${cond_ts}" +%s 2>/dev/null || echo 0)"
+  # 时间戳解析不出来时按「不是残留」处理：宁可如实报失败，也不要掩盖真实超时。
+  [ "${cond_epoch}" -gt 0 ] || return 1
+  [ "${cond_epoch}" -lt "${APPLIED_EPOCH:-0}" ] || return 1
+
+  local idx
+  idx="$(kubectl -n "${NAMESPACE}" get "${res}" "${name}" \
+    -o jsonpath='{range .status.conditions[*]}{.type}{"\n"}{end}' \
+    2>/dev/null | grep -n '^Progressing$' | cut -d: -f1 || true)"
+  [ -n "${idx}" ] || return 1
+  idx=$(( idx - 1 ))
+  if ! kubectl -n "${NAMESPACE}" patch "${res}" "${name}" --subresource=status --type=json \
+      -p "[{\"op\":\"remove\",\"path\":\"/status/conditions/${idx}\"}]" >/dev/null 2>&1; then
+    log "${object} 的 ProgressDeadlineExceeded 条件（${cond_ts}）是本次 apply 之前的残留，但清除失败（kubectl 不支持 --subresource？）"
+    return 1
+  fi
+  log "${object} 的 ProgressDeadlineExceeded 条件（${cond_ts}）早于本次 apply，属残留条件，已清除"
+  return 0
+}
+
 for object in ${K8S_ROLLOUT:-}; do
   log "等待 ${object} 完成 rollout（最长 ${TIMEOUT}s）"
   if ! kubectl -n "${NAMESPACE}" rollout status "${object}" --timeout="${TIMEOUT}s"; then
-    log "${object} rollout 失败"
-    dump_failure
-    exit 1
+    if stale_progress_deadline "${object}" && \
+       kubectl -n "${NAMESPACE}" rollout status "${object}" --timeout="${TIMEOUT}s"; then
+      log "${object} 继续等待后 rollout 完成"
+    else
+      log "${object} rollout 失败"
+      dump_failure
+      exit 1
+    fi
   fi
 done
 
