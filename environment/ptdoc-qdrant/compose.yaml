@@ -16,7 +16,9 @@ services:
     image: ${QDRANT_IMAGE}:${QDRANT_IMAGE_TAG}
     container_name: ptdoc-qdrant
     restart: unless-stopped
-    pull_policy: always
+    # pull_policy 用 missing：deploy.sh 的「拉取镜像」步骤已显式 pull（带重试），
+    # always 会让 `up -d` 再拉一次同 digest，registry 一次 522 就把部署打红（2026-11-09 lems）。
+    pull_policy: missing
     platform: linux/amd64
     volumes:
       # 必须使用宿主机绝对路径：编排目录迁移时相对路径会解析到别处，等于「数据消失」
@@ -31,7 +33,9 @@ services:
     image: ${GATEWAY_IMAGE}:${GATEWAY_IMAGE_TAG}
     container_name: ptdoc-qdrant-gateway
     restart: unless-stopped
-    pull_policy: always
+    # pull_policy 用 missing：deploy.sh 的「拉取镜像」步骤已显式 pull（带重试），
+    # always 会让 `up -d` 再拉一次同 digest，registry 一次 522 就把部署打红（2026-11-09 lems）。
+    pull_policy: missing
     platform: linux/amd64
     environment:
       QDRANT_URL: http://qdrant:6333

@@ -101,8 +101,26 @@ if [ -f "${SECRETS_FILE}" ]; then
   COMPOSE_ARGS+=(--env-file "${SECRETS_FILE}")
 fi
 
+# 拉取镜像：registry（ghcr.chenby.cn 走 Cloudflare）偶发 522/504。2026-11-09 的 lems
+# 部署就是这样红的：`pull` 成功，紧接着 `up -d` 因 pull_policy=always 再拉一次同镜像
+# 时被 522 打断，整条部署失败。这里给 pull 加退避重试（10s/20s/40s）。
+pull_images() {
+  local attempt=1 max=4 delay=10
+  while :; do
+    if docker compose "${COMPOSE_ARGS[@]}" pull; then return 0; fi
+    if [ "${attempt}" -ge "${max}" ]; then
+      echo "拉取镜像失败（已重试 $((max - 1)) 次）" >&2
+      return 1
+    fi
+    log "拉取镜像失败（第 ${attempt}/${max} 次），${delay}s 后重试"
+    sleep "${delay}"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
+}
+
 log "拉取镜像"
-docker compose "${COMPOSE_ARGS[@]}" pull
+pull_images
 
 log "应用期望状态"
 docker compose "${COMPOSE_ARGS[@]}" up -d --remove-orphans
