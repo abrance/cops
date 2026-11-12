@@ -126,10 +126,31 @@ dump_failure() {
 #
 # 四个实测要点：
 #   1. 必须在 kubectl apply 之前：Secret 不存在时 Pod 会卡在 CreateContainerConfigError。
+#      代价是命名空间得先存在，见下面「先建命名空间」一段。
 #   2. 声明了 SECRET_ENV 却没有密钥文件 → 直接失败，不带着空密钥上线。
 #   3. 幂等：内容没变就不动注解，避免每次部署都白滚动一次。
 #   4. 滚动触发放在 kubectl apply **之后**（见下面的 checksum 段）：首次部署时
 #      Deployment 还不存在，提前 patch 会 NotFound 直接失败。
+#
+# 先建命名空间：本单元的 manifest 里自带 kind: Namespace 时，若不先建，上面的 Secret
+# 创建会先 NotFound（2026-11-13 apps/pg 首次部署实测：
+#   error: namespaces "pg" not found）。只处理本单元自己声明的那个 Namespace，
+# 不碰其他单元的；已是 Active 时是 no-op。
+if [ -n "${SECRET_ENV:-}" ]; then
+  declared_ns="$(awk '
+    /^kind: Namespace[[:space:]]*$/ { want=1; next }
+    /^kind: / { want=0 }
+    want && /^  name: / { sub(/^  name: /, ""); print; want=0 }
+  ' "${RENDERED}" | sort -u)"
+  for ns in ${declared_ns}; do
+    if kubectl get namespace "${ns}" >/dev/null 2>&1; then
+      continue
+    fi
+    log "命名空间 ${ns} 不存在，先创建（Secret 要先于 apply 落在它里面）"
+    kubectl create namespace "${ns}" >/dev/null
+  done
+fi
+
 if [ -n "${SECRET_ENV:-}" ]; then
   if [ ! -f "${SECRETS_FILE}" ]; then
     log "声明了 SECRET_ENV 但找不到密钥文件 ${SECRETS_FILE}"
