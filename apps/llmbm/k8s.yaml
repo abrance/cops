@@ -52,6 +52,10 @@ spec:
       labels:
         app: llmbm
     spec:
+      # 镜像在 GHCR 上是私有包，kubelet 必须带凭据拉取。
+      # 凭据本身是命名空间里的 dockerconfigjson Secret（值不进仓库）；这里只引用名字。
+      imagePullSecrets:
+        - name: ghcr-pull
       # 收到 SIGTERM 后等在途 SSE 请求收尾（Node 侧无强制超时，给 30s 足够）
       terminationGracePeriodSeconds: 30
       securityContext:
