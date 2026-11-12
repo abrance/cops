@@ -1,0 +1,349 @@
+# pg：cloud3 上的 Postgres 17 单副本单元（取代 46 天前手搓的 pg-test 实例）
+#
+# 由 cops 部署流程执行（k8s 模式，见仓库根 README 的「k8s 部署模式」）：
+#   CI 侧 scripts/render-k8s.py 按同级 .env / app.conf 渲染本文件的变量占位符
+#   → 同步到 /opt/cops/apps/pg/ → scripts/deploy-k8s.sh 建 Secret pg-secrets 再 apply
+#
+# 相对旧 pg-test 实例改的四件事（都是「不在 GitOps 里」的后果）：
+#   1. PGDATA 在 PVC 上：挂载点必须是 /var/lib/postgresql/data（PGDATA 默认值）。
+#      旧实例挂的是父目录 /var/lib/postgresql，PGDATA 实际落进了容器匿名卷，Pod 一删就没。
+#   2. 没有公网入口：不建 IngressRoute / IngressRouteTCP，只有 ClusterIP。
+#      旧实例用 Traefik 的 pg 入口暴露到 186.244.201.55:30630，闸门只有口令。
+#   3. pg_hba 收紧到集群 Pod 网段 + scram，没有 trust，没有 host all all all。
+#   4. 备份独立成 CronJob（文末），dump 进 MinIO 与宿主机目录，不落 local-path。
+#
+# 注意 render-k8s.py 的限制：本文件里（含注释与脚本）不能出现字面量美元花括号，
+# 所以下面的 shell 一律用裸 $VAR，需要默认值/截断时改用 sed 之类。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${K8S_NAMESPACE}
+---
+# 首次初始化用的脚本（只在空 datadir 上执行一次）。
+#   - 建 llmbm 应用角色与库：最小权限，非 superuser、非 createdb
+#   - 用收紧过的 pg_hba.conf 覆盖 initdb 生成的那份（那份 local 是 trust）
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-init
+  namespace: ${K8S_NAMESPACE}
+data:
+  10-llmbm.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    # 口令来自 Secret pg-secrets，不进仓库、不进镜像
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<SQL
+    CREATE ROLE $LLMBM_DB_USER LOGIN PASSWORD '$LLMBM_DB_PASSWORD';
+    CREATE DATABASE $LLMBM_DB_NAME OWNER $LLMBM_DB_USER;
+    SQL
+    echo "已创建角色与库：$LLMBM_DB_USER / $LLMBM_DB_NAME"
+  99-pg-hba.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    # 覆盖 initdb 生成的口径：那份是 local trust + host scram，且放行任意远端地址。
+    # 这里只放行集群 Pod 网段，全部要求口令；管理员（$POSTGRES_USER）也只能从集群内连。
+    cat > "$PGDATA/pg_hba.conf" <<'HBA'
+    # TYPE  DATABASE  USER  ADDRESS         METHOD
+    # 容器内 socket 也要口令：没有 trust。调试时用 psql -h 127.0.0.1 并带 PGPASSWORD。
+    local   all       all                   scram-sha-256
+    host    all       all   127.0.0.1/32    scram-sha-256
+    host    all       all   ::1/128         scram-sha-256
+    # llmbm 应用角色：只从集群内连它自己的库（显式一条，便于审计）
+    host    llmbm     llmbm 10.42.0.0/16    scram-sha-256
+    # 管理员：仅集群内
+    host    all       all   10.42.0.0/16    scram-sha-256
+    HBA
+    chmod 0600 "$PGDATA/pg_hba.conf"
+    echo "已收紧 pg_hba.conf"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: pg
+spec:
+  # ClusterIP，没有 NodePort / LoadBalancer：集群内唯一入口 pg.pg.svc:5432
+  type: ClusterIP
+  selector:
+    app: pg
+  ports:
+    - name: pg
+      port: ${PG_PORT}
+      targetPort: pg
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: pg
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: pg
+spec:
+  serviceName: pg
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pg
+  # 单副本有状态服务：先停旧的再起新的，避免两个进程同时打开同一份 PGDATA
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        app: pg
+    spec:
+      # 镜像内置的 postgres 账号是 uid/gid 999。fsGroup 让 kubelet 把 PVC 挂载点
+      # 归到 999 组；initContainer 再兜一次属主（local-path 目录由 kubelet 以 root 建）。
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      initContainers:
+        - name: fix-permissions
+          image: ${PG_IMAGE}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              chown 999:999 /var/lib/postgresql/data
+              chmod 0700 /var/lib/postgresql/data
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+      containers:
+        - name: pg
+          image: ${PG_IMAGE}
+          imagePullPolicy: IfNotPresent
+          args:
+            # 显式监听全部地址：initdb 生成的配置里这是注释掉的，靠镜像默认值不可靠
+            - -c
+            - listen_addresses=*
+          env:
+            - name: POSTGRES_USER
+              value: ${POSTGRES_USER}
+            - name: POSTGRES_DB
+              value: ${POSTGRES_DB}
+            - name: PGDATA
+              value: /var/lib/postgresql/data
+            # 初始化脚本要用的两个值：超级用户口令、应用角色口令
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secrets
+                  key: POSTGRES_PASSWORD
+            - name: LLMBM_DB_USER
+              value: ${LLMBM_DB_USER}
+            - name: LLMBM_DB_NAME
+              value: ${LLMBM_DB_NAME}
+            - name: LLMBM_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secrets
+                  key: LLMBM_DB_PASSWORD
+          ports:
+            - name: pg
+              containerPort: ${PG_PORT}
+              protocol: TCP
+          # 初始化脚本只在空 datadir 上跑一次（首启建库 + 收紧 pg_hba）。
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          # pg_isready 只探「进程在不在接连接」，不认证，所以不需要口令
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -h
+                - 127.0.0.1
+                - -p
+                - "${PG_PORT}"
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # liveness 给很宽的失败阈值：崩溃恢复（WAL 重放）期间进程在、但可能长时间不接连接
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -h
+                - 127.0.0.1
+                - -p
+                - "${PG_PORT}"
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: ${PG_CPU_REQUEST}
+              memory: ${PG_MEM_REQUEST}
+            limits:
+              cpu: ${PG_CPU_LIMIT}
+              memory: ${PG_MEM_LIMIT}
+      volumes:
+        - name: init
+          configMap:
+            name: pg-init
+            defaultMode: 0755
+  # 一次给够：local-path 的 StorageClass 没开 allowVolumeExpansion，建好不能扩容
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: local-path
+        resources:
+          requests:
+            storage: ${PG_DATA_SIZE}
+---
+# ── 备份 ───────────────────────────────────────────────────────────────────
+# 独立于 PG 容器的 CronJob（Pod 生命周期不跟着数据库走）。
+#
+# 两个容器共享一个 emptyDir：
+#   dump    用 postgres 镜像里的 pg_dump -Fc 导出 llmbm 库 + 全局角色（globals）
+#   upload  用带 mc 的镜像上传到 MinIO，周日额外复制一份到宿主机目录
+# 分成两个容器而不是一个，是因为没有任何一个官方镜像同时带 pg_dump 和 mc：
+# minio/mc 在 docker.io 与 quay.io 都已不可匿名拉取（实测 401）。
+#
+# 保留策略：MinIO 14 天（服务端 mc --older-than 清理）；宿主机目录 4 周。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pg-backup
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: pg-backup
+spec:
+  schedule: "${PG_BACKUP_SCHEDULE}"
+  timeZone: ${PG_BACKUP_TZ}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app: pg-backup
+        spec:
+          restartPolicy: Never
+          # root：要写宿主机 hostPath（root 属主）与 emptyDir，且 pg_dump 不需要 PGDATA
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          containers:
+            - name: dump
+              image: ${PG_IMAGE}
+              imagePullPolicy: IfNotPresent
+              command:
+                - bash
+                - -c
+                - |
+                  set -euo pipefail
+                  trap 'touch /dump/.failed' ERR
+                  export PGPASSWORD="$POSTGRES_PASSWORD"
+                  pg_dump -h "$PGHOST" -p "$PGPORT" -U "$POSTGRES_USER" \
+                    -d "$LLMBM_DB_NAME" -Fc -f /dump/llmbm.dump
+                  # 角色/口令哈希一并留档，否则空集群上恢复不了属主
+                  pg_dumpall -h "$PGHOST" -p "$PGPORT" -U "$POSTGRES_USER" \
+                    --globals-only -f /dump/globals.sql
+                  ls -l /dump
+                  touch /dump/.done
+              env:
+                - name: PGHOST
+                  value: pg.${K8S_NAMESPACE}.svc.cluster.local
+                - name: PGPORT
+                  value: "${PG_PORT}"
+                - name: POSTGRES_USER
+                  value: ${POSTGRES_USER}
+                - name: LLMBM_DB_NAME
+                  value: ${LLMBM_DB_NAME}
+                - name: POSTGRES_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-secrets
+                      key: POSTGRES_PASSWORD
+              volumeMounts:
+                - name: dump
+                  mountPath: /dump
+            - name: upload
+              image: ${PG_BACKUP_IMAGE}
+              imagePullPolicy: IfNotPresent
+              command:
+                - bash
+                - -c
+                - |
+                  set -o pipefail
+                  for i in $(seq 1 120); do
+                    if [ -f /dump/.done ]; then break; fi
+                    if [ -f /dump/.failed ]; then echo "dump 失败，放弃上传"; exit 1; fi
+                    sleep 5
+                  done
+                  if [ ! -f /dump/.done ]; then echo "等 dump 超时"; exit 1; fi
+
+                  MC=/opt/bitnami/minio-client/bin/mc
+                  BUCKET="$MINIO_ENDPOINT/$PG_BACKUP_BUCKET"
+                  $MC alias set loc "$MINIO_ENDPOINT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+                  $MC mb --ignore-existing "$BUCKET"
+                  STAMP=$(date +%Y%m%d)
+                  $MC cp /dump/llmbm.dump "$BUCKET/daily/pg-llmbm-$STAMP.dump"
+                  $MC cp /dump/globals.sql "$BUCKET/daily/pg-globals-$STAMP.sql"
+                  # 14 天保留（服务端按对象修改时间清）
+                  $MC rm --recursive --force --older-than "$PG_BACKUP_KEEP_DAYS"d "$BUCKET/daily/" || true
+
+                  # 周日再复制一份到宿主机 /opt/cops/backup/pg（PV 与 / 同盘，不算异地，
+                  # 但能扛住「误删 PVC / 重建命名空间」这类集群内事故）
+                  if [ "$(date +%u)" = "7" ]; then
+                    cp /dump/llmbm.dump "/host-backup/pg-llmbm-$STAMP.dump"
+                    cp /dump/globals.sql "/host-backup/pg-globals-$STAMP.sql"
+                    find /host-backup -maxdepth 1 -type f -mtime +"$PG_BACKUP_HOST_KEEP_DAYS" -delete
+                    echo "已复制到宿主机备份目录"
+                  fi
+                  echo "备份完成：$STAMP"
+              env:
+                - name: MINIO_ENDPOINT
+                  value: ${MINIO_ENDPOINT}
+                - name: PG_BACKUP_BUCKET
+                  value: ${PG_BACKUP_BUCKET}
+                - name: PG_BACKUP_KEEP_DAYS
+                  value: "${PG_BACKUP_KEEP_DAYS}"
+                - name: PG_BACKUP_HOST_KEEP_DAYS
+                  value: "${PG_BACKUP_HOST_KEEP_DAYS}"
+                - name: MINIO_ROOT_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-secrets
+                      key: MINIO_ROOT_USER
+                - name: MINIO_ROOT_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-secrets
+                      key: MINIO_ROOT_PASSWORD
+              volumeMounts:
+                - name: dump
+                  mountPath: /dump
+                - name: host-backup
+                  mountPath: /host-backup
+          volumes:
+            - name: dump
+              emptyDir: {}
+            - name: host-backup
+              hostPath:
+                path: /opt/cops/backup/pg
+                type: DirectoryOrCreate

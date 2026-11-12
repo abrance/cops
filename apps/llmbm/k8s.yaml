@@ -1,7 +1,8 @@
 # llmbm：单镜像（api 进程内托管前端产物）+ Postgres（v0.2）+ 历史 SQLite 卷。
 # 形态约束（spec §7）：不拆 nginx sidecar、不多容器。
 #
-# v0.2 起结果库改用 pg-test 命名空间的 PG（llmbm/llmbm 专用库与角色）。SQLite 卷
+# v0.2 起结果库改用集群内 PG（apps/pg 单元，pg.pg.svc:5432 的 llmbm 库与角色）。
+# 早期版本连的是 pg-test 命名空间里手搓的实例，2026-11-13 起由 apps/pg 取代。SQLite 卷
 # /data/llmbm.db 保留不清：它既是 v0.1.1 的回滚数据源，也是迁移前取数的来源，
 # 迁完之后服务端不再写它（LLMBM_PG_URL 未设时才回落到它）。
 apiVersion: v1
