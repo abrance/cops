@@ -72,7 +72,8 @@ esac
         enabled: true
         size: 128Mi
   ```
-  改完 k3s 的 helm-controller 会自动重跑 `helm-install-traefik` 并滚动重启 Traefik。**persistence 必须开**：不开的话 `acme.json` 在 emptyDir，重启丢证书、反复重签会撞 Let's Encrypt 限流。
+  改完 k3s 的 helm-controller 会自动重跑 `helm-install-traefik` 并滚动重启 Traefik。
+  2026-11-13 的现值里**没有** `pg` 入口（`--entrypoints.pg.address=:5432` 与 `ports.pg`）：它当初只为把 `pg-test` 的 Postgres 暴露到公网 30630 而加，随 `apps/pg` 单元上线一并移除（该单元的 PG 只留 ClusterIP，见 README 的 `pg` 行）。同一次操作里也删掉了 `pg-test` 的两条 `IngressRouteTCP`（`pg-tcp` 指向 30630 入口、`pg` 指向 443 上 `HostSNI(pg.186.244.201.55.sslip.io)` 透传）。改动前的 valuesContent 存档在主机 `/opt/cops/backup/traefik-config/valuesContent-before-pg-removal-20261113.yaml`。`mysql` 入口（30630 之外的 30514）保持不动。**persistence 必须开**：不开的话 `acme.json` 在 emptyDir，重启丢证书、反复重签会撞 Let's Encrypt 限流。
 - **kubeconfig 给非 root 用户用**：`sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config && chown xiaoy:xiaoy ~/.kube/config && chmod 600`。注意 k3s 轮换客户端证书后这份拷贝会失效，重新复制即可。
 
 ### 6. 公网入口 / 证书（当前生效方案）
@@ -91,6 +92,7 @@ esac
 | `openbao/` 命名空间 | OpenBao 密钥管理，仓库第一个 helm chart 单元（期望状态 = `apps/openbao/values.yaml` 渲染官方 chart + `k8s.yaml`，CI 全自动，见 README「helm chart 单元」）；对象：StatefulSet `openbao`（OnDelete 策略）+ 内置 PVC `data-openbao-openbao-0` 10Gi + ConfigMap/ServiceAccount/ClusterRoleBinding + 2×IngressRoute + `Middleware redirect-https`；入口 `https://bao.xiaoyxq.top`，UI 在 `/ui/` |
 | `demo/`（whoami deploy+svc、`IngressRoute whoami-http`/`whoami-tls`、`Middleware redirect-https`） | **临时验证用**，可作为新服务模板；不要了就 `kubectl delete ns demo` |
 | `minio/` 命名空间 | 对象存储单元 `environment/minio`（CI 部署）：StatefulSet `minio` + Service + 4×IngressRoute（API 与控制台各 web/websecure 两条）+ `Middleware redirect-https`；数据在宿主机 `/opt/minio/data`（hostPath）。迁移前它是手工建的 `minio-test/`（PVC data-minio-0 + 两条手工 IngressRoute），搬迁步骤见下一小节 |
+| `pg/` 命名空间 | Postgres 17 单元 `apps/pg`（CI 部署）：StatefulSet `pg` + Service `pg`（**ClusterIP only**，无任何 IngressRoute）+ PVC `data-pg-0` 10Gi（PGDATA 在 `/var/lib/postgresql/data`）+ ConfigMap `pg-init` + CronJob `pg-backup`；备份进 MinIO `pg-backup` bucket 与宿主机 `/opt/cops/backup/pg`。它取代了手搓的 `pg-test`（后者只读封存，其两条 `IngressRouteTCP` 已删，数据仍在 PVC `pg-test/data-pg-0`） |
 | `mysql8/` 命名空间 | 通用 MySQL 8 单元 `environment/mysql8`（CI 部署）：StatefulSet `mysql` + Service `mysql`；数据在宿主机 `/opt/mysql8/data`（hostPath），无 HTTP 接口。迁移前它是手工部署的 MySQL（PVC `data-mysql-0` + Secret，随旧命名空间已删），搬迁步骤见 [存档](archive/vikunja-removed-20261110.md) |
 | `186.244.201.55.sslip.io` 的证书 | 已签发成功，作为端到端验证证据 |
 

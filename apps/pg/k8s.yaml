@@ -266,6 +266,9 @@ spec:
                   ls -l /dump
                   touch /dump/.done
               env:
+                # 容器内 date 是 UTC：不设 TZ 时凌晨会上传到前一天的日期
+                - name: TZ
+                  value: ${TZ}
                 - name: PGHOST
                   value: pg.${K8S_NAMESPACE}.svc.cluster.local
                 - name: PGPORT
@@ -289,7 +292,10 @@ spec:
                 - bash
                 - -c
                 - |
-                  set -o pipefail
+                  # set -e：任何一步（alias/mb/cp/stat）失败都必须让 Job 失败。
+                  # 少了它，cp 失败后仍会打印「备份完成」，界面上一片绿而备份根本不存在
+                  # （2026-11-13 首次试跑就是这样漏过去的）。
+                  set -eo pipefail
                   for i in $(seq 1 120); do
                     if [ -f /dump/.done ]; then break; fi
                     if [ -f /dump/.failed ]; then echo "dump 失败，放弃上传"; exit 1; fi
@@ -298,12 +304,19 @@ spec:
                   if [ ! -f /dump/.done ]; then echo "等 dump 超时"; exit 1; fi
 
                   MC=/opt/bitnami/minio-client/bin/mc
-                  BUCKET="$MINIO_ENDPOINT/$PG_BACKUP_BUCKET"
+                  # mc 只认 alias 而不是裸 URL：写成 "$MINIO_ENDPOINT/$BUCKET" 时 mc 会把
+                  # 它当非法 target 拒掉，而紧接着的 cp 会静默写到容器本地目录
+                  # /pg/ 而不是 MinIO（2026-11-13 首次试跑实测）。所以先建 alias，
+                  # 全程用 loc/$BUCKET，最后 ls 回读确认对象真的在服务端。
                   $MC alias set loc "$MINIO_ENDPOINT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+                  BUCKET="loc/$PG_BACKUP_BUCKET"
                   $MC mb --ignore-existing "$BUCKET"
                   STAMP=$(date +%Y%m%d)
                   $MC cp /dump/llmbm.dump "$BUCKET/daily/pg-llmbm-$STAMP.dump"
                   $MC cp /dump/globals.sql "$BUCKET/daily/pg-globals-$STAMP.sql"
+                  # 回读确认：cp 的退出码不足以证明对象落在服务端
+                  $MC stat "$BUCKET/daily/pg-llmbm-$STAMP.dump" >/dev/null
+                  $MC stat "$BUCKET/daily/pg-globals-$STAMP.sql" >/dev/null
                   # 14 天保留（服务端按对象修改时间清）
                   $MC rm --recursive --force --older-than "$PG_BACKUP_KEEP_DAYS"d "$BUCKET/daily/" || true
 
@@ -317,6 +330,8 @@ spec:
                   fi
                   echo "备份完成：$STAMP"
               env:
+                - name: TZ
+                  value: ${TZ}
                 - name: MINIO_ENDPOINT
                   value: ${MINIO_ENDPOINT}
                 - name: PG_BACKUP_BUCKET
