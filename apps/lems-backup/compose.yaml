@@ -1,0 +1,67 @@
+# lems-backup 期望状态：ems SQLite 的定时备份 + 异地同步
+#
+# 由 cops 部署流程在云主机 /opt/cops/apps/lems-backup 下执行。
+#
+# 为什么单独成单元：备份本体此前只存在于 cloud2 的 /opt/cops/backup/lems-tools-v2/，
+# 不在 git 里。cops 是期望状态的唯一事实源，主机重建后备份体系会连人带脚本一起消失，
+# 而且没有任何告警会发现——所以容器编排、镜像、调度都纳入本仓库。
+#
+# backup.sh 的权威副本在 ems 仓库 deploy/docker-compose/backup.sh（PR #132），
+# 本目录是同步过来的副本：改备份逻辑请先改 ems 仓库那一份，再复制过来。
+name: lems-backup
+
+services:
+  ems-backup:
+    # 本地构建：这个镜像只服务本单元，没有 registry 可拉，也不需要
+    build: .
+    image: ems-backup:3
+    # 显式 build，避免 deploy.sh 的 `compose pull` 去 docker.io 找一个不存在的同名镜像
+    pull_policy: build
+    container_name: ems-backup
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      BACKUP_CRON: "0 3 * * *"
+      BACKUP_ON_START: "1"
+      # 容器内路径：生产卷只读挂到 /src，备份目录挂到 /dst
+      VOLUME: /src
+      DB: db.sqlite3
+      BACKUP_DIR: /dst
+      KEEP_DAILY: "7"
+      KEEP_WEEKLY: "4"
+      KEEP_OFFSITE: "7"
+      # 用 IP 而不是主机名：easytier 的 Magic DNS 只注入宿主机，容器里解析不到 nas，
+      # 走 10.193.0.5 直连
+      OFFSITE: "xiaoy@10.193.0.5:/pool1_8t/public/backup/lems"
+      SSH_KEY: /ssh/id_ed25519
+      SSH_KNOWN_HOSTS: /ssh/known_hosts
+    volumes:
+      # 生产库只读挂进来：备份容器绝不写生产卷
+      - lems_lems-data:/src:ro
+      - /opt/cops/backup/lems:/dst
+      # 镜像内无 tzdata，备份文件名用 UTC，日志时间戳要本地时区
+      - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
+      # 只挂密钥与 known_hosts，不挂整个 ~/.ssh：宿主机 config 是 600，
+      # 容器内 root 读会被 ssh 判为权限不安全
+      - /opt/cops/backup/lems-ssh:/ssh:ro
+    healthcheck:
+      # 备份是定时任务，容器活着就等于调度器活着；没有 HTTP 可探
+      test:
+        - CMD
+        - pgrep
+        - crond
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+volumes:
+  # 生产库卷由 apps/lems 创建，本单元只读引用，不负责创建
+  lems_lems-data:
+    external: true
+    name: lems_lems-data
