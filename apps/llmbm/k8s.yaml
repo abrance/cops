@@ -1,0 +1,158 @@
+# llmbm：单镜像（api 进程内托管前端产物）+ SQLite + PVC。
+# 形态约束（spec §7）：不拆 nginx sidecar、不多容器、本次不迁 Postgres。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llmbm-data
+  namespace: ${K8S_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: ${LLMBM_DATA_SIZE}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llmbm-config
+  namespace: ${K8S_NAMESPACE}
+data:
+  NODE_ENV: "production"
+  TZ: "${TZ}"
+  HOST: "0.0.0.0"
+  PORT: "${LLMBM_PORT}"
+  LLMBM_DB: "/data/llmbm.db"
+  WEB_ROOT: "/app/apps/web/dist"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llmbm
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: llmbm
+spec:
+  # 单副本：SQLite 单写者 + RWO 卷，横向扩展没有收益（并发压力在上游网关，
+  # 服务端只做静态托管与流式透传）。Recreate 避免两个 Pod 同时打开同一个库。
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: llmbm
+  template:
+    metadata:
+      labels:
+        app: llmbm
+    spec:
+      # 收到 SIGTERM 后等在途 SSE 请求收尾（Node 侧无强制超时，给 30s 足够）
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        # 镜像里内置的非 root 账号 app（uid 100 / gid 101，见 deploy/Dockerfile）。
+        # 必须显式给 fsGroup：PVC 挂进来时目录默认 root:root，不给组就写不了 SQLite。
+        runAsNonRoot: true
+        runAsUser: 100
+        runAsGroup: 101
+        fsGroup: 101
+      containers:
+        - name: llmbm
+          image: ${LLMBM_IMAGE}:${LLMBM_IMAGE_TAG}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: ${LLMBM_PORT}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: llmbm-config
+          volumeMounts:
+            - name: llmbm-data
+              mountPath: /data
+          # startup 单独给足：冷启动要读前端产物清单 + 打开 SQLite，首启还会建表
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 40
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # liveness 只判「进程还在不在服务」：/api/health 不触达上游网关，
+          # 所以不会因为网关慢或余额问题把 Pod 重启掉。
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: ${LLMBM_CPU_REQUEST}
+              memory: ${LLMBM_MEM_REQUEST}
+            limits:
+              cpu: ${LLMBM_CPU_LIMIT}
+              memory: ${LLMBM_MEM_LIMIT}
+      volumes:
+        - name: llmbm-data
+          persistentVolumeClaim:
+            claimName: llmbm-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llmbm
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: llmbm
+spec:
+  selector:
+    app: llmbm
+  ports:
+    - name: http
+      port: ${LLMBM_PORT}
+      targetPort: ${LLMBM_PORT}
+---
+# 公网入口必须拆两条 IngressRoute（Traefik v3：一条里同时写 [web, websecure] + tls
+# 只生成 websecure 路由，80 会 404、HTTP-01 挑战也 404，见 docs/cloud3.md）。
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: llmbm
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      middlewares:
+        - name: redirect-https
+      services:
+        - name: llmbm
+          port: ${LLMBM_PORT}
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: llmbm-tls
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`${PUBLIC_HOST}`)
+      kind: Rule
+      services:
+        - name: llmbm
+          port: ${LLMBM_PORT}
+  tls:
+    certResolver: letsencrypt

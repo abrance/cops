@@ -36,6 +36,7 @@
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
 | `vectorman` | `gse-server`、`dataserver`、`console`、`gse-agent`（DaemonSet） | `ghcr.io/abrance/vectorman-server`、`docker.io/library/vectorman-gse-agent`（节点本地导入） | GSE 采集链路：三个服务端组件 + 每节点一个采集 Agent；cloud3（k8s），入口 `https://vectorman.xiaoyxq.top`（Agent RPC 走 `:30710` NodePort）；**有状态**，sqlite/tsink/redb 在 `hostPath /opt/vectorman-k8s/*`；源码仓库 [abrance/vectorman](https://github.com/abrance/vectorman) |
+| `llmbm` | `llmbm` | `ghcr.io/abrance/llmbm:v0.1.0` | LLM 能力基准测试台（题库跑测 + 能力分）；cloud3（k8s），入口 `https://llmbm.186.244.201.55.sslip.io`；**有状态**，SQLite 在 PVC `cops/llmbm-data`（2Gi）；**单镜像**（api 进程内托管前端产物，容器端口 8787）；模型 Key 只在浏览器 localStorage，服务端不持有，故无运行期密钥；源码仓库 [abrance/llmbm](https://github.com/abrance/llmbm) |
 | `openbao` | `openbao` | `quay.io/openbao/openbao` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
 单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`model-ocr`/`model-logcluster`/`model-forecast`/`model-jev`/`openbao`/`minio`/`mysql8` 在 `cloud3`，其余在 `default`。
