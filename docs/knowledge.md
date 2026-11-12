@@ -21,8 +21,8 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 
 | 单元 | Compose 服务 | `.env` 变量 | 当前完整镜像 |
 | --- | --- | --- | --- |
-| `apps/lems` | `lems` | `LEMS_IMAGE` + `LEMS_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ems:v1.0.8` |
-| `apps/lems` | `emsdevice` | `EMSDEVICE_IMAGE` + `EMSDEVICE_IMAGE_TAG` | `ghcr.chenby.cn/abrance/emsdevice:v1.0.5` |
+| `apps/lems` | `lems` | `LEMS_IMAGE` + `LEMS_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ems:v1.0.65` |
+| `apps/lems` | `emsdevice` | `EMSDEVICE_IMAGE` + `EMSDEVICE_IMAGE_TAG` | `ghcr.chenby.cn/abrance/emsdevice:v1.0.64` |
 | `apps/ptdoc` | `ptdoc` | `PTDOC_IMAGE` + `PTDOC_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc:v1.4.3` |
 | `environment/ptdoc-qdrant` | `qdrant` | `QDRANT_IMAGE` + `QDRANT_IMAGE_TAG` | `docker.io/qdrant/qdrant:v1.19.1` |
 | `environment/ptdoc-qdrant` | `gateway` | `GATEWAY_IMAGE` + `GATEWAY_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc-qdrant-gateway:1.0.7` |
