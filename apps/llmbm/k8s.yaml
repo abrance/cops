@@ -1,5 +1,9 @@
-# llmbm：单镜像（api 进程内托管前端产物）+ SQLite + PVC。
-# 形态约束（spec §7）：不拆 nginx sidecar、不多容器、本次不迁 Postgres。
+# llmbm：单镜像（api 进程内托管前端产物）+ Postgres（v0.2）+ 历史 SQLite 卷。
+# 形态约束（spec §7）：不拆 nginx sidecar、不多容器。
+#
+# v0.2 起结果库改用 pg-test 命名空间的 PG（llmbm/llmbm 专用库与角色）。SQLite 卷
+# /data/llmbm.db 保留不清：它既是 v0.1.1 的回滚数据源，也是迁移前取数的来源，
+# 迁完之后服务端不再写它（LLMBM_PG_URL 未设时才回落到它）。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -34,8 +38,9 @@ metadata:
   labels:
     app: llmbm
 spec:
-  # 单副本：SQLite 单写者 + RWO 卷，横向扩展没有收益（并发压力在上游网关，
-  # 服务端只做静态托管与流式透传）。Recreate 避免两个 Pod 同时打开同一个库。
+  # 单副本：并发压力在上游网关，服务端只做静态托管与流式透传，横向扩展没有收益；
+  # 而且 v0.1.1 的 SQLite 回落路径仍是单写者 + RWO 卷。Recreate 保持原样：
+  # 回滚到 SQLite 时不能有两个 Pod 同时打开同一个库。
   replicas: 1
   strategy:
     type: Recreate
@@ -47,6 +52,10 @@ spec:
       labels:
         app: llmbm
     spec:
+      # 镜像在 GHCR 上是私有包，kubelet 必须带凭据拉取。
+      # 凭据本身是命名空间里的 dockerconfigjson Secret（值不进仓库）；这里只引用名字。
+      imagePullSecrets:
+        - name: ghcr-pull
       # 收到 SIGTERM 后等在途 SSE 请求收尾（Node 侧无强制超时，给 30s 足够）
       terminationGracePeriodSeconds: 30
       securityContext:
@@ -67,6 +76,17 @@ spec:
           envFrom:
             - configMapRef:
                 name: llmbm-config
+          env:
+            # 运行期唯一的真实密钥：DB DSN。值只在命名空间 Secret llmbm-pg 里
+            # （key LLMBM_PG_URL，运维手工建，不经 cops CI 下发、不进仓库）。
+            # 这里只出现 secret 名字。secret 缺失时 Pod 直接卡在
+            # CreateContainerConfigError —— 有意的 fail-closed：宁可起不来，
+            # 也不能静默回落到 SQLite 让「以为在写 PG」。
+            - name: LLMBM_PG_URL
+              valueFrom:
+                secretKeyRef:
+                  name: llmbm-pg
+                  key: LLMBM_PG_URL
           volumeMounts:
             - name: llmbm-data
               mountPath: /data
