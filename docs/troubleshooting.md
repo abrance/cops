@@ -148,6 +148,34 @@ ls -la /opt/<服务>/data
 
 宿主机挂载目录属主与容器运行用户不一致会导致写入失败。检查目录属主，必要时调整 `mkdir -p` 时的属主或让容器以对应用户运行。
 
+### lems 数据备份（SQLite WAL，2026-11-12 起）
+
+`apps/lems`（cloud2）自 `ems:v1.0.65` 起 SQLite 以 **WAL** 模式运行，库里是卷 `lems_lems-data` 的 `db.sqlite3`。
+
+**WAL 下只拷 `db.sqlite3` 单文件会丢最近写入**（已提交但还没 checkpoint 进主库的事务在 `-wal` 里）。
+只拷主文件得到的库看着能打开，却可能少掉最后一次 checkpoint 之后的所有数据，而且没有任何报错。
+
+正确做法（推荐第 1 种）：
+
+```bash
+# 1) 停容器再整目录拷（最稳，重建容器不碰卷）
+cd /opt/cops/apps/lems
+mkdir -p /opt/cops/backup/lems
+docker compose --env-file .env stop lems
+docker run --rm -v lems_lems-data:/d -v /opt/cops/backup/lems:/b alpine \
+  sh -c "cp -a /d/db.sqlite3 /d/db.sqlite3-wal /d/db.sqlite3-shm /b/ 2>/dev/null || cp -a /d/db.sqlite3 /b/"
+docker compose --env-file .env up -d lems
+
+# 2) 不停容器时：先 checkpoint(TRUNCATE) 把 WAL 并回主库，再拷主文件
+docker exec lems sh -c 'echo "PRAGMA wal_checkpoint(TRUNCATE);"' # 容器内无 sqlite3 CLI 时改用下面这条
+#   python3 -c "import sqlite3;c=sqlite3.connect('/path/out/db.sqlite3');print(c.execute('PRAGMA wal_checkpoint(TRUNCATE);').fetchall())"
+```
+
+自查：拷贝时 `-wal` 不为 0 字节就必须一起拷；恢复时三件套（`db.sqlite3` + `-wal` + `-shm`）放到同一目录，否则 SQLite 会忽略 WAL。
+卷内 `out/` 下应同时存在 `db.sqlite3-wal`、`db.sqlite3-shm`，这是 WAL 生效、且容器内 db 路径没跑偏的证据。
+
+**回滚注意**：`v1.0.64` 及更早是非 WAL；只回滚镜像不会把库改回 `delete` 模式，旧版仍能打开 WAL 库，但备份口径要按 WAL 执行。
+
 ## 手工触发与回滚
 
 **强制重新部署**（不修改仓库）：
