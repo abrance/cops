@@ -10,7 +10,8 @@
 #   2. 没有公网入口：不建 IngressRoute / IngressRouteTCP，只有 ClusterIP。
 #      旧实例用 Traefik 的 pg 入口暴露到 186.244.201.55:30630，闸门只有口令。
 #   3. pg_hba 收紧到集群 Pod 网段 + scram，没有 trust，没有 host all all all。
-#   4. 备份独立成 CronJob（文末），dump 进 MinIO 与宿主机目录，不落 local-path。
+#   4. 备份独立成 CronJob（文末），dump 进 MinIO + 宿主机目录 + NAS（异地），不落 local-path。
+#      前两处与本单元的 PVC 同在 /dev/vda1，只有 NAS 那份能扛盘坏，见备份段的失效域注释。
 #
 # 注意 render-k8s.py 的限制：本文件里（含注释与脚本）不能出现字面量美元花括号，
 # 所以下面的 shell 一律用裸 $VAR，需要默认值/截断时改用 sed 之类。
@@ -218,7 +219,17 @@ spec:
 # 分成两个容器而不是一个，是因为没有任何一个官方镜像同时带 pg_dump 和 mc：
 # minio/mc 在 docker.io 与 quay.io 都已不可匿名拉取（实测 401）。
 #
-# 保留策略：MinIO 14 天（服务端 mc --older-than 清理）；宿主机目录 4 周。
+# 保留策略：MinIO 14 天（服务端 mc --older-than 清理）；宿主机目录 4 周；
+# 异地（NAS /pool1_8t/public/backup/pg）14 份。
+#
+# 失效域（2026-11-13 复核，必须知道）：MinIO 的数据目录是 hostPath
+# /opt/minio/data，mountinfo 实测与 PG 的 PVC 同在 /dev/vda1 这一块盘；
+# 周日那份 /opt/cops/backup/pg 也在同一块盘。所以 MinIO + 宿主机目录只能扛
+# 「误删库 / 误删 PVC / 重建命名空间」，扛不住盘坏或宿主机整体丢失。
+# 真正的异地副本只有 NAS 那一份（另一台物理机、另一块盘），见 upload 容器末段。
+#
+# 异地凭据：私钥与 known_hosts 由宿主机 /opt/cops/backup/pg-offsite-ssh 只读挂入，
+# 不进 git、不进 Secret（与 lems-backup 的 lems-ssh 同一做法）。
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -230,6 +241,8 @@ spec:
   schedule: "${PG_BACKUP_SCHEDULE}"
   timeZone: ${PG_BACKUP_TZ}
   concurrencyPolicy: Forbid
+  # 错过 1 小时就不再补跑：备份要的是「当天那份」，隔天补出来的日期名会误导；
+  # 少一天由次日备份与 MinIO 14 天保留兜住。
   startingDeadlineSeconds: 3600
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -237,6 +250,10 @@ spec:
     spec:
       backoffLimit: 2
       activeDeadlineSeconds: 1800
+      # 不设 ttlSecondsAfterFinished 时 Job（连同失败 Pod）会一直留到被 historyLimit 挤掉。
+      # 24 小时后由 TTL 控制器连同 Pod 回收；当天那次在 kubectl get jobs 里仍可见，
+      # 便于次日核对。（字段在 Job 的 spec 上，CronJob.spec 里没有这一项。）
+      ttlSecondsAfterFinished: 86400
       template:
         metadata:
           labels:
@@ -355,6 +372,74 @@ spec:
                   mountPath: /dump
                 - name: host-backup
                   mountPath: /host-backup
+            # ── 异地副本（NAS，另一台物理机）─────────────────────────────
+            # MinIO 的数据目录是 hostPath /opt/minio/data，与 PG 的 PVC、与周日那份
+            # /opt/cops/backup/pg 同在 cloud3 的 /dev/vda1（mountinfo 实测），
+            # 盘坏/宿主机丢时三者一起没。这一容器是唯一的异地副本。
+            #
+            # 单独成容器而不是塞进 upload：bitnamilegacy/minio 镜像里没有 ssh/scp
+            # （2026-11-13 实测 `bash: line 44: ssh: command not found`）。
+            # 与 upload 平行跑：两者都只读 dump 出来的 /dump，互不依赖。
+            - name: offsite
+              image: ${PG_BACKUP_OFFSITE_IMAGE}
+              imagePullPolicy: IfNotPresent
+              command:
+                # 镜像是 Alpine，没有 bash（2026-11-13 实测 exec: "bash": not found），用 sh
+                - sh
+                - -c
+                - |
+                  set -eu
+                  for i in $(seq 1 120); do
+                    if [ -f /dump/.done ]; then break; fi
+                    if [ -f /dump/.failed ]; then echo "dump 失败，放弃异地副本"; exit 1; fi
+                    sleep 5
+                  done
+                  if [ ! -f /dump/.done ]; then echo "等 dump 超时"; exit 1; fi
+
+                  KEY=/offsite-ssh/id_ed25519
+                  SSHO="-i $KEY -o UserKnownHostsFile=/offsite-ssh/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=10"
+                  DIR="$PG_BACKUP_OFFSITE_DIR"
+                  STAMP=$(date +%Y%m%d)
+                  # shellcheck disable=SC2086
+                  ssh $SSHO "$PG_BACKUP_OFFSITE_HOST" "mkdir -p '$DIR'"
+                  for pair in "llmbm.dump:pg-llmbm-$STAMP.dump" "globals.sql:pg-globals-$STAMP.sql"; do
+                    src="/dump/$(echo "$pair" | cut -d: -f1)"
+                    dst="$DIR/$(echo "$pair" | cut -d: -f2)"
+                    # shellcheck disable=SC2086
+                    scp -q $SSHO "$src" "$PG_BACKUP_OFFSITE_HOST:$dst"
+                    # 只回读 sha256 一致才算成功：scp 退出 0 只证明传完，不证明内容对
+                    local_sha=$(sha256sum "$src" | cut -d' ' -f1)
+                    # shellcheck disable=SC2086
+                    remote_sha=$(ssh $SSHO "$PG_BACKUP_OFFSITE_HOST" "sha256sum '$dst'" | cut -d' ' -f1)
+                    if [ "$local_sha" != "$remote_sha" ]; then
+                      echo "异地校验失败 $dst：本地 $local_sha / 远端 $remote_sha"
+                      exit 1
+                    fi
+                    echo "异地 ok $dst sha256=$local_sha"
+                  done
+                  # 按份数保留（异地只增不减会慢慢吃满 NAS）
+                  NEXT=$((PG_BACKUP_OFFSITE_KEEP + 1))
+                  # shellcheck disable=SC2086
+                  ssh $SSHO "$PG_BACKUP_OFFSITE_HOST" \
+                    "ls -1t '$DIR'/pg-llmbm-*.dump 2>/dev/null | tail -n +$NEXT | xargs -r rm -f; \
+                     ls -1t '$DIR'/pg-globals-*.sql 2>/dev/null | tail -n +$NEXT | xargs -r rm -f" \
+                    || echo "WARN 异地旧备份清理失败（不影响本次备份）"
+                  echo "异地完成：$STAMP"
+              env:
+                - name: TZ
+                  value: ${TZ}
+                - name: PG_BACKUP_OFFSITE_HOST
+                  value: ${PG_BACKUP_OFFSITE_HOST}
+                - name: PG_BACKUP_OFFSITE_DIR
+                  value: ${PG_BACKUP_OFFSITE_DIR}
+                - name: PG_BACKUP_OFFSITE_KEEP
+                  value: "${PG_BACKUP_OFFSITE_KEEP}"
+              volumeMounts:
+                - name: dump
+                  mountPath: /dump
+                - name: offsite-ssh
+                  mountPath: /offsite-ssh
+                  readOnly: true
           volumes:
             - name: dump
               emptyDir: {}
@@ -362,3 +447,8 @@ spec:
               hostPath:
                 path: /opt/cops/backup/pg
                 type: DirectoryOrCreate
+            # 异地 SSH 私钥 + NAS 主机指纹，宿主机本地维护（不进 git / Secret）
+            - name: offsite-ssh
+              hostPath:
+                path: /opt/cops/backup/pg-offsite-ssh
+                type: Directory

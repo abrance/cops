@@ -4,14 +4,26 @@
 
 ```sh
 kubectl -n cops create secret generic llmbm-pg \
-  --from-literal=LLMBM_PG_URL="postgres://llmbm:<旧口令>@pg.pg-test.svc.cluster.local:5432/llmbm" \
+  --from-literal=LLMBM_PG_URL="postgres://llmbm:<口令>@pg.pg-test.svc.cluster.local:5432/llmbm" \
   --dry-run=client -o yaml | kubectl apply -f - && \
 kubectl -n cops rollout restart deploy/llmbm && kubectl -n cops rollout status deploy/llmbm
 ```
 
-旧口令在 `pg-test/pg-secret`（`kubectl -n pg-test get secret pg-secret -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d`）
-与当时的 `cops/llmbm-pg` 一致。**这条回滚只把 DSN 指回去**，不恢复公网入口——
-`pg-test` 不需要再暴露到 30630 也能被 `cops` 命名空间访问（同一个集群）。
+口令**必须现取，不能从旧记录/旧会话里拷**：
+
+```sh
+kubectl -n pg-test get secret pg-secret -o jsonpath='{.data.LLMBM_DB_PASSWORD}' | base64 -d
+```
+
+（注意是 `LLMBM_DB_PASSWORD`，不是 `POSTGRES_PASSWORD`——后者是超级用户 `xiaoy` 的，
+拿它当 `llmbm` 的口令会直接 authentication failed。）
+
+**2026-11-13 已轮换**：`pg-test` 的 `llmbm` 角色口令被破包成 base64 落进过别人的会话记录，
+已用 `ALTER ROLE llmbm PASSWORD` 换成新的 32 位随机值，同步写回 `pg-test/pg-secret` 的
+`LLMBM_DB_PASSWORD`（实测：新口令能连、旧口令 `b383f7c1…` 已 `password authentication failed`）。
+所以**任何文档、会话记录、截图里的旧口令都不能当回滚目标**，一律走上面这条命令现取。
+也注意 `pg-test` 的 `pg_hba.conf` 对 `127.0.0.1` 与 local 是 `trust`（旧实例遗留，实测乱口令也能连上），
+所以在 `pg-test` Pod 内部自测口令没有意义，要从别的 Pod 经 Service 连才算数。
 
 ## 场景 B：要恢复公网 30630（只有明确需要时才做，等于重新打开那个洞）
 
@@ -44,3 +56,14 @@ HostPath 数据也要手工清 `/var/lib/rancher/k3s/storage/pvc-5fe66e2b-*`）�
   # 容器内：pg_restore -h pg.pg.svc.cluster.local -U xiaoy -d <临时库> /path/litellm.dump
   ```
   sha256：`3b0b1dc86c30c1ceba9be725546c8fee0ddeaec435871e30a81f091541f177c9`（原始 292087 字节）。
+
+## 备份在哪、能扛什么
+
+| 落点 | 位置 | 保留 | 与 PG 数据是否同一失效域 |
+|---|---|---|---|
+| MinIO | `pg-backup` bucket 的 `daily/`（对象存储服务端；数据目录是 cloud3 hostPath `/opt/minio/data`） | 14 天 | **是**：同在本机 `/dev/vda1` |
+| 宿主机目录 | `cloud3:/opt/cops/backup/pg`（每周日那份） | 4 周 | **是**：同一块盘 |
+| 异地 | `xiaoy@10.193.0.5:/pool1_8t/public/backup/pg`（NAS，另一台物理机） | 14 份 | **否**，唯一真异地副本 |
+
+前两处只能扛「误删库 / 误删 PVC / 重建命名空间」；盘坏或 cloud3 整体丢失时只剩 NAS 那份。
+每天 03:00 的 Job 会把 dump 传到 NAS 并回读 sha256，不一致即 Job 失败（不会静默只留本地）。
