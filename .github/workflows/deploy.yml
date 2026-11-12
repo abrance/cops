@@ -290,6 +290,11 @@ jobs:
           # 与 minio 的 root 口令同值——有意复用同一个 secret，
           # 避免多份口令漂移；代价是同一个值覆盖多个组件。
           MYSQL_ROOT_PASSWORD: ${{ secrets.COMMON_SIMPLE_PASSWORD }}
+          # pg（k8s）：Postgres 17 单元的超级用户口令与 llmbm 应用角色口令。
+          # 两个都是**新生成**的口令，与旧的 pg-test 实例无关：旧实例的 llmbm 口令
+          # 已经以 base64 形式进过会话记录，换实例时一并作废。
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          LLMBM_DB_PASSWORD: ${{ secrets.LLMBM_DB_PASSWORD }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
