@@ -47,6 +47,13 @@ spec:
       labels:
         app: llmbm
     spec:
+      # llmbm 的镜像包在 ghcr 上是私有的（仓库 private ⇒ 包 private，GitHub 不给
+      # 改可见性的 API），必须带凭据才能拉。Secret 用 kubectl 手工建、不进仓库：
+      #   kubectl -n cops create secret docker-registry ghcr-pull \
+      #     --docker-server=ghcr.io --docker-username=<GhUser> --docker-password=<PAT>
+      # 换节点/重建集群后要重跑一次，否则新 tag 首次部署会 ImagePullBackOff。
+      imagePullSecrets:
+        - name: ghcr-pull
       # 收到 SIGTERM 后等在途 SSE 请求收尾（Node 侧无强制超时，给 30s 足够）
       terminationGracePeriodSeconds: 30
       securityContext:
