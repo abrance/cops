@@ -88,7 +88,7 @@ esac
 | --- | --- |
 | `kube-system/HelmChartConfig traefik` | 上面的 ACME + persistence 配置 |
 | `kube-system/pvc traefik` | 存 `acme.json` |
-| `cops/` 命名空间 | 由 CI 部署的应用单元：`lems-cloud3`（LEMS Deployment+Service+PVC `lems-data` 10Gi+2×IngressRoute，入口 `https://ems.xiaoyxq.top`）、`model-ocr`（Deployment+Service+2×IngressRoute，无状态）、`model-logcluster`（同上 + PVC `model-logcluster-state` 2Gi）、共享 `Middleware redirect-https` |
+| `cops/` 命名空间 | 由 CI 部署的应用单元：`lems-cloud3`（LEMS Deployment+Service+PVC `lems-data` 10Gi+2×IngressRoute，入口 `https://ems.xiaoyxq.top`；同单元还有 Modbus 从站 `emsdevice` Deployment+Service:1502，`strategy: Recreate`，tag 于 2026-11-13 从 `v1.0.56` 对齐到 `v1.0.64`——二进制与旧 tag 完全相同，见该单元 `.env` 注释）、`model-ocr`（Deployment+Service+2×IngressRoute，无状态）、`model-logcluster`（同上 + PVC `model-logcluster-state` 2Gi）、共享 `Middleware redirect-https` |
 | `openbao/` 命名空间 | OpenBao 密钥管理，仓库第一个 helm chart 单元（期望状态 = `apps/openbao/values.yaml` 渲染官方 chart + `k8s.yaml`，CI 全自动，见 README「helm chart 单元」）；对象：StatefulSet `openbao`（OnDelete 策略）+ 内置 PVC `data-openbao-openbao-0` 10Gi + ConfigMap/ServiceAccount/ClusterRoleBinding + 2×IngressRoute + `Middleware redirect-https`；入口 `https://bao.xiaoyxq.top`，UI 在 `/ui/` |
 | `demo/`（whoami deploy+svc、`IngressRoute whoami-http`/`whoami-tls`、`Middleware redirect-https`） | **临时验证用**，可作为新服务模板；不要了就 `kubectl delete ns demo` |
 | `minio/` 命名空间 | 对象存储单元 `environment/minio`（CI 部署）：StatefulSet `minio` + Service + 4×IngressRoute（API 与控制台各 web/websecure 两条）+ `Middleware redirect-https`；数据在宿主机 `/opt/minio/data`（hostPath）。迁移前它是手工建的 `minio-test/`（PVC data-minio-0 + 两条手工 IngressRoute），搬迁步骤见下一小节 |
@@ -270,11 +270,7 @@ sudo chown -R xiaoy:xiaoy /opt/cops     # CI 以 xiaoy 身份同步单元目录�
   ```
   **必须重启 k3s 才生效**（`kubelet-arg` 只在校验通过的启动阶段读取，`SIGHUP` 不重新加载；`configz` 里这两项变非 `null` 就是生效了）。
 
-  **不需要重启整机**，`sudo systemctl restart k3s` 即可，且**实测不会重建 pod**：2026-11-08 06:12:56 那次 `systemctl restart k3s` 之后，`minio-0`（10-14 创建）、`mysql-0`（10-14）、`openbao-0`（10-05）、`coredns`（09-25）的 `creationTimestamp` 全部没变、`restartCount` 仍为 0 —— 因为 unit 是 `KillMode=process`，containerd 及其容器不受 k3s 主进程退出的影响，kubelet 重新拉起后直接接管现存容器。验证方法：重启前后各跑一次
-  ```bash
-  kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.creationTimestamp} {.metadata.namespace}/{.metadata.name} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | sort
-  ```
-  两次结果应当完全一致。
+  **不需要重启整机**，`sudo systemctl restart k3s` 即可，且**实测不会重建 pod**（详见第十节「重启 k3s 不重建 pod 的实测」）。
 
   仍然要留观察窗：`system-reserved` 生效后 allocatable 会从 15.61 Gi 降到约 13.6 Gi，此刻已分配 requests 是 9.52 Gi（59%），仍在安全区，但**必须先确认没有 Pod 会因为新 allocatable 而变成"节点内存不足"**（`kubectl describe node` 的 Allocated resources 会重算）。回滚：删掉这几行 `kubelet-arg` 再 `systemctl restart k3s`。
 
@@ -284,3 +280,41 @@ sudo chown -R xiaoy:xiaoy /opt/cops     # CI 以 xiaoy 身份同步单元目录�
 - 旧主机的 `model-logcluster_state` 卷按计划保留一周（到 2026-10-02）后再删；迁移时的状态快照备份在 cloud3 的 `/opt/cops/backup/model-logcluster-state-2026-09-25.tgz`（sha256 `377f2e7b…`）。
 - **`mysql8` 目前没有定时备份**：库与账号由各应用自行创建，备份口径随应用而定。可选：给需要的库加一个每日 `mysqldump` 的 CronJob（落 `/opt/cops/backup/`，需轮换），或继续手工导。触发条件：数据开始明显增长，或发生过一次“想回滚但没 dump”。
 - MinIO 控制台入口仍对公网开放（登录用 root 账号，口令与 mysql8 的 root 口令同值）。收紧方式：去掉控制台 IngressRoute 改 `kubectl port-forward`，或加 Traefik basicauth 中间件。
+
+## 十、重启 k3s 不重建 pod 的实测（2026-11-13 复核）
+
+**结论：`systemctl restart k3s` 不会重建任何 Pod，容器的 `creationTimestamp` 与 `restartCount` 都不变。**这是可以放心重启 k3s 改 `kubelet-arg` 的依据。
+
+**一、机制**：k3s 的 systemd unit 是 `KillMode=process`，只杀主进程，不杀 cgroup 里的其他进程。containerd（独立 unit）与它管理的容器因此不受影响；kubelet 重新拉起后直接接管现存容器，不重建。
+
+```
+$ systemctl show k3s -p KillMode -p ExecMainStartTimestamp
+KillMode=process
+ExecMainStartTimestamp=Sun 2026-11-08 06:15:42 UTC
+
+$ ps -o lstart,etime -p <containerd pid>
+Sun Nov  8 06:15:47 2026  5-09:07:08 containerd
+```
+
+注意 containerd 与 k3s 是同一次操作里重启的（06:15:42 / 06:15:47），但容器仍存活——因为 containerd 重启不会杀 shim 进程，容器进程树仍挂在 containerd-shim 下。
+
+**二、实证**：2026-11-08 06:15:42 那次 `systemctl restart k3s` 之后，下列 Pod 的 `creationTimestamp` **全部早于这次重启**，且 `restartCount` 未因此增加：
+
+| Pod | creationTimestamp | 早于重启 |
+|---|---|---|
+| `kube-system/coredns-577d995dff-46bxs` | 2026-09-25T10:35:52Z | 44 天 |
+| `cops/model-logcluster-d58dd8d95-l9kqc` | 2026-09-25T13:40:17Z | 44 天 |
+| `openbao/openbao-0` | 2026-10-05T02:32:06Z | 34 天 |
+| `minio/minio-0` | 2026-10-14T14:52:16Z | 25 天 |
+| `mysql8/mysql-0` | 2026-10-14T15:11:29Z | 25 天 |
+
+**三、下次怎么自己验**：重启前后各跑一次，两次输出必须完全一致（`diff` 无输出）：
+
+```bash
+kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.creationTimestamp} {.metadata.namespace}/{.metadata.name} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | sort > /tmp/pods-before.txt
+sudo systemctl restart k3s   # 等 k3s ActiveEnterTimestamp 更新、node 回到 Ready
+kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.creationTimestamp} {.metadata.namespace}/{.metadata.name} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | sort > /tmp/pods-after.txt
+diff /tmp/pods-before.txt /tmp/pods-after.txt && echo "无 pod 重建"
+```
+
+**边界**：这条实测只覆盖 `systemctl restart k3s`（kubelet 参数变更走这条路径）。**重启整机、`systemctl restart containerd`、节点 NotReady 超过 `pod-eviction-timeout` 都不在此列**——那些会真的重建 Pod。
