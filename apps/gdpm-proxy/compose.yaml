@@ -1,0 +1,32 @@
+# gdpm-proxy 期望状态：给 cloud3 的 lems 采集做境内出口的白名单 CONNECT 代理
+#
+# 为什么需要它：pm.gd.csg.cn 对境外来源 IP 不回包。cloud3 出口是美国 Colorado
+# （实测 TLS 握手成功、响应体永远 0 字节），同 URL 在 cloud2（上海）直连是
+# 200 / 2561 bytes。lems 的两路新采集（24 点分时、地市节点价）因此在 cloud3 全灭。
+#
+# 为什么自写而不是 squid/tinyproxy：
+#   1. cloud2 上没有免密 sudo，装不了系统包；
+#   2. docker.io 的第三方镜像被本机镜像源挡成 403（实测 dtagdevsec/tinyproxy 拉不动）；
+#   3. python:3.12-slim 本地已有，标准库足够。
+# 白名单硬编码在 proxy.py 的 PROXY_ALLOW：不在名单里的目的域一律 403。
+#
+# 为什么绑 10.193.0.9 而不是 0.0.0.0：只让 easytier mesh 内的机器用，
+# 不监听公网网卡，也就不需要额外的安全组规则。
+name: gdpm-proxy
+
+services:
+  gdpm-proxy:
+    build: .
+    image: gdpm-proxy:1
+    # 同 lems-backup：显式 build，避免 compose pull 去 registry 找一个不存在的同名镜像
+    pull_policy: build
+    container_name: gdpm-proxy
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TZ: Asia/Shanghai
+      # 目的主机白名单（逗号分隔）。加新站点必须同时确认「境内出口可达」。
+      PROXY_ALLOW: "pm.gd.csg.cn"
+      PROXY_PORT: "3128"
+      # 绑 mesh 地址：cloud3 是 10.193.0.10，走 tun0 互访，不经公网。
+      PROXY_BIND: "10.193.0.9"

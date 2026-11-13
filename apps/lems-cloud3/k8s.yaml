@@ -86,6 +86,24 @@ spec:
                 name: lems-cloud3-config
             - secretRef:
                 name: lems-cloud3-secrets
+          env:
+            # 采集出境代理：pm.gd.csg.cn 对境外来源 IP 不回包，cloud3 直连拿不到数据。
+            # 代理在 cloud2（apps/gdpm-proxy），走 easytier mesh，白名单只放行该源站。
+            # 大小写两种都写：Go 的 httpproxy 读小写优先、但部分库与子进程读大写。
+            - name: HTTPS_PROXY
+              value: "${PROXY_URL}"
+            - name: HTTP_PROXY
+              value: "${PROXY_URL}"
+            - name: https_proxy
+              value: "${PROXY_URL}"
+            - name: http_proxy
+              value: "${PROXY_URL}"
+            # MUST：不加会把集群内 API 与本来就直连正常的外站（七牛/微信/OCR）
+            # 全塞进只有单站点白名单的代理，等于把 lems 弄挂。逐项见 .env 注释。
+            - name: NO_PROXY
+              value: "${NO_PROXY}"
+            - name: no_proxy
+              value: "${NO_PROXY}"
           volumeMounts:
             - name: lems-data
               mountPath: /app/out
