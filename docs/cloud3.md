@@ -260,7 +260,15 @@ sudo chown -R xiaoy:xiaoy /opt/cops     # CI 以 xiaoy 身份同步单元目录�
     - "eviction-hard=memory.available<500Mi"
     - "enforce-node-allocatable=pods,system-reserved"
   ```
-  **必须重启 k3s 才生效**（`kubelet-arg` 只在校验通过的启动阶段读取，SIGHUP 不重新加载）。不重启的替代手段：把那几条 `MemoryMax` 加到 `containerd` / 单独的服务上，但覆盖不到 kubelet 自己的 cgroup。重启影响：所有 pod 会重建一次（约 2~4 分钟全站不可用），需要单独约时间窗。
+  **必须重启 k3s 才生效**（`kubelet-arg` 只在校验通过的启动阶段读取，`SIGHUP` 不重新加载；`configz` 里这两项变非 `null` 就是生效了）。
+
+  **不需要重启整机**，`sudo systemctl restart k3s` 即可，且**实测不会重建 pod**：2026-11-08 06:12:56 那次 `systemctl restart k3s` 之后，`minio-0`（10-14 创建）、`mysql-0`（10-14）、`openbao-0`（10-05）、`coredns`（09-25）的 `creationTimestamp` 全部没变、`restartCount` 仍为 0 —— 因为 unit 是 `KillMode=process`，containerd 及其容器不受 k3s 主进程退出的影响，kubelet 重新拉起后直接接管现存容器。验证方法：重启前后各跑一次
+  ```bash
+  kubectl get pods -A -o jsonpath='{range .items[*]}{.metadata.creationTimestamp} {.metadata.namespace}/{.metadata.name} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | sort
+  ```
+  两次结果应当完全一致。
+
+  仍然要留观察窗：`system-reserved` 生效后 allocatable 会从 15.61 Gi 降到约 13.6 Gi，此刻已分配 requests 是 9.52 Gi（59%），仍在安全区，但**必须先确认没有 Pod 会因为新 allocatable 而变成"节点内存不足"**（`kubectl describe node` 的 Allocated resources 会重算）。回滚：删掉这几行 `kubelet-arg` 再 `systemctl restart k3s`。
 
 - **Gateway API 暂不启用**（CRD 已随 k3s 装好，但 provider 关闭）。原因：Gateway API 的 listener TLS 只能引用 Secret，Traefik 内置 ACME 挂不上去，等于要额外引入 cert-manager + 腾讯云 DNS webhook。触发重新评估：多人/多团队自助开通子域名、需要 TCP/UDP/gRPC、需要标准化灰度语义、或想换掉 Traefik。
 - 泛域名证书（`*.xiaoyxq.top`）未启用。方案：Traefik ACME DNS-01 + lego 的 `tencentcloud` provider（`TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`），好处是以后加服务连 DNS 都不用动。密钥只放 k8s Secret，**不入库**。
