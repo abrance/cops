@@ -259,20 +259,46 @@ sudo chown -R xiaoy:xiaoy /opt/cops     # CI 以 xiaoy 身份同步单元目录�
 
 ## 九、未做 / 待决策
 
-- **`systemReserved` / `kubeReserved` 仍未设**（2026-11-13 核实：`kubectl get --raw /api/v1/nodes/<node>/proxy/configz` 里两者都是 `null`，`enforceNodeAllocatable` 只有 `pods`）。后果是 pod 的可分配额里没有为 k3s、containerd、netdata、journald 这些系统进程预留内存，2026-11-09 的整机 OOM 因此没有任何缓冲。计划值（按实测非 pod 进程 RSS 合计 2.38 Gi、留一倍余量）：
+- **`systemReserved` / `kubeReserved` 已设并生效（2026-11-13 落地）**。此前两者都是 `null`（`kubectl get --raw /api/v1/nodes/<node>/proxy/configz`），pod 的可分配额里没有为 k3s、containerd、netdata、journald 这些系统进程留内存，2026-11-09 的整机 OOM 因此没有任何缓冲。现行配置（按实测非 pod 进程 RSS 合计 2.38 Gi、留一倍余量）：
+
   ```yaml
   # /etc/rancher/k3s/config.yaml
+  # 注：enforce-node-allocatable 含 system-reserved 时 kubelet 强制要求 --system-reserved-cgroup，
+  # k3s 未配 cgroup 层级，故只做容量预留（下调 allocatable），不做 cgroup 强制。
+  # eviction-hard 显式设置会覆盖默认值，故必须同时写回磁盘阈值，否则丢失磁盘驱逐保护。
   kubelet-arg:
     - "system-reserved=cpu=500m,memory=1Gi,ephemeral-storage=5Gi"
     - "kube-reserved=cpu=500m,memory=1Gi,ephemeral-storage=5Gi"
-    - "eviction-hard=memory.available<500Mi"
-    - "enforce-node-allocatable=pods,system-reserved"
+    - "eviction-hard=memory.available<500Mi,imagefs.available<5%,nodefs.available<5%"
   ```
-  **必须重启 k3s 才生效**（`kubelet-arg` 只在校验通过的启动阶段读取，`SIGHUP` 不重新加载；`configz` 里这两项变非 `null` 就是生效了）。
 
-  **不需要重启整机**，`sudo systemctl restart k3s` 即可，且**实测不会重建 pod**（详见第十节「重启 k3s 不重建 pod 的实测」）。
+  生效后的 `configz`：
+  ```
+  systemReserved: {'cpu': '500m', 'ephemeral-storage': '5Gi', 'memory': '1Gi'}
+  kubeReserved:   {'cpu': '500m', 'ephemeral-storage': '5Gi', 'memory': '1Gi'}
+  evictionHard:   {'imagefs.available': '5%', 'memory.available': '500Mi', 'nodefs.available': '5%'}
+  enforceNodeAllocatable: ['pods']
+  ```
 
-  仍然要留观察窗：`system-reserved` 生效后 allocatable 会从 15.61 Gi 降到约 13.6 Gi，此刻已分配 requests 是 9.52 Gi（59%），仍在安全区，但**必须先确认没有 Pod 会因为新 allocatable 而变成"节点内存不足"**（`kubectl describe node` 的 Allocated resources 会重算）。回滚：删掉这几行 `kubelet-arg` 再 `systemctl restart k3s`。
+  **这只是调度侧扣减，不是 cgroup 硬隔离。** `enforceNodeAllocatable` 仍只有 `pods`，系统进程本身没有被限制在独立 cgroup 里；作用是让 pod 的 allocatable 变小，从而 kubelet 不再把系统进程的内存也算成"可分配"，避免 pod 挤满整机。真要硬隔离必须给 k3s 配 `--system-reserved-cgroup` / `--kube-reserved-cgroup` 的 cgroup 层级，k3s 目前没做。
+
+  **必须重启 k3s 才生效**（`kubelet-arg` 只在校验通过的启动阶段读取，`SIGHUP` 不重新加载）。**不需要重启整机**，`sudo systemctl restart k3s` 即可，且**实测不会重建 pod**（详见第十节）。
+
+  **两个必须记住的坑：**
+
+  1. **把 `system-reserved` 加进 `enforce-node-allocatable` 会让 k3s 直接拒绝启动。** kubelet 校验：`enforceNodeAllocatable` 含 `system-reserved` 时必须同时提供 `--system-reserved-cgroup`，k3s 没配 cgroup 层级 → 启动失败。实测后果是 **3.5 分钟的崩溃循环**（systemd 反复重启 k3s，节点 NotReady），必须改回只留 `pods` 才能起来。所以上面配置里**没有** `enforce-node-allocatable` 这一行，保持默认 `pods`。
+  2. **显式写 `eviction-hard` 会整体覆盖默认值，不是追加。** 默认 `eviction-hard` 含 `nodefs.available<5%`、`imagefs.available<5%`；只写 `memory.available<500Mi` 会把磁盘两项抹掉，等于关掉磁盘驱逐保护。必须像上面那样把三项一起写上。
+
+  **实测结果（2026-11-13 15:56:04 UTC 重启 k3s 后）：**
+
+  | 项 | 值 |
+  | --- | --- |
+  | allocatable memory | 15.61 Gi → **13.13 Gi**（`13763648Ki`） |
+  | 已分配 requests | **9516Mi = 69.2%**（cpu 5120m = 34%，limits 内存 25642Mi = 190% 属正常超卖） |
+  | Pod 总数 | **31 个，零重建** |
+  | 长期 pod `creationTimestamp` | 全部早于本次重启：coredns `2026-09-25T10:35:52Z`、model-logcluster `2026-09-25T13:40:17Z`、openbao-0 `2026-10-05T02:32:06Z`、minio-0 `2026-10-14T14:52:16Z`、mysql-0 `2026-10-14T15:11:29Z` |
+
+  回滚：删掉这几行 `kubelet-arg` 再 `systemctl restart k3s`（同样不重建 pod）。
 
 - **Gateway API 暂不启用**（CRD 已随 k3s 装好，但 provider 关闭）。原因：Gateway API 的 listener TLS 只能引用 Secret，Traefik 内置 ACME 挂不上去，等于要额外引入 cert-manager + 腾讯云 DNS webhook。触发重新评估：多人/多团队自助开通子域名、需要 TCP/UDP/gRPC、需要标准化灰度语义、或想换掉 Traefik。
 - 泛域名证书（`*.xiaoyxq.top`）未启用。方案：Traefik ACME DNS-01 + lego 的 `tencentcloud` provider（`TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`），好处是以后加服务连 DNS 都不用动。密钥只放 k8s Secret，**不入库**。
