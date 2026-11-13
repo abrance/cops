@@ -36,6 +36,11 @@ metadata:
     app: model-jev
 spec:
   replicas: 1
+  # 单副本 + 有模型加载峰值（2.3 GB），默认滚动更新会先起新 Pod 再删旧 Pod，
+  # 瞬间占两份 requests（2+2 Gi），在 16Gi 节点上会把总 requests 推到 91% 而 Pending。
+  # Recreate 先删后建，代价是发布期间约 10s 不可用。
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: model-jev

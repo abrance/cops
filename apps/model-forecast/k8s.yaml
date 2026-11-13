@@ -36,6 +36,10 @@ metadata:
     app: model-forecast
 spec:
   replicas: 1
+  # 单副本 + 模型加载峰值 2.8 GB：默认滚动更新会先起新 Pod，两副本同时存在时
+  # requests 会瞬间翻倍（2+2 Gi）而在 16Gi 节点上 Pending。Recreate 先删后建。
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: model-forecast

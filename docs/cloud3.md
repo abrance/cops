@@ -251,6 +251,17 @@ sudo chown -R xiaoy:xiaoy /opt/cops     # CI 以 xiaoy 身份同步单元目录�
 
 ## 九、未做 / 待决策
 
+- **`systemReserved` / `kubeReserved` 仍未设**（2026-11-13 核实：`kubectl get --raw /api/v1/nodes/<node>/proxy/configz` 里两者都是 `null`，`enforceNodeAllocatable` 只有 `pods`）。后果是 pod 的可分配额里没有为 k3s、containerd、netdata、journald 这些系统进程预留内存，2026-11-09 的整机 OOM 因此没有任何缓冲。计划值（按实测非 pod 进程 RSS 合计 2.38 Gi、留一倍余量）：
+  ```yaml
+  # /etc/rancher/k3s/config.yaml
+  kubelet-arg:
+    - "system-reserved=cpu=500m,memory=1Gi,ephemeral-storage=5Gi"
+    - "kube-reserved=cpu=500m,memory=1Gi,ephemeral-storage=5Gi"
+    - "eviction-hard=memory.available<500Mi"
+    - "enforce-node-allocatable=pods,system-reserved"
+  ```
+  **必须重启 k3s 才生效**（`kubelet-arg` 只在校验通过的启动阶段读取，SIGHUP 不重新加载）。不重启的替代手段：把那几条 `MemoryMax` 加到 `containerd` / 单独的服务上，但覆盖不到 kubelet 自己的 cgroup。重启影响：所有 pod 会重建一次（约 2~4 分钟全站不可用），需要单独约时间窗。
+
 - **Gateway API 暂不启用**（CRD 已随 k3s 装好，但 provider 关闭）。原因：Gateway API 的 listener TLS 只能引用 Secret，Traefik 内置 ACME 挂不上去，等于要额外引入 cert-manager + 腾讯云 DNS webhook。触发重新评估：多人/多团队自助开通子域名、需要 TCP/UDP/gRPC、需要标准化灰度语义、或想换掉 Traefik。
 - 泛域名证书（`*.xiaoyxq.top`）未启用。方案：Traefik ACME DNS-01 + lego 的 `tencentcloud` provider（`TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`），好处是以后加服务连 DNS 都不用动。密钥只放 k8s Secret，**不入库**。
 - `demo` 命名空间是验证残留（whoami + sslip.io 证书），可按需删除：`kubectl delete ns demo`。
