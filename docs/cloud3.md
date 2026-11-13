@@ -189,6 +189,12 @@ MinIO bucket `vikunja`、仓库单元 `apps/vikunja/` 与 CI env 映射，DNS `v
 - **出口 IP 在境外（美国 Colorado），部分境内源站不回包**：`pm.gd.csg.cn` 是最典型的一例 —— TCP 443 建连成功、TLS 握手成功，但 HTTP 响应体永远是 0 字节；同一 URL 从 cloud2（上海）和本机（深圳）都是 200 / 2561 bytes。不是 MTU 黑洞（pypi 192KB 响应正常）。
   因此 `apps/lems-cloud3` 注入了 `HTTPS_PROXY=http://10.193.0.9:3128`（走 easytier mesh 到 cloud2 上的 `apps/gdpm-proxy` 白名单代理），并用 `NO_PROXY` 把**本来就直连正常**的外站（微信、七牛、自家域名、energydc.cn）排除在代理之外。新增依赖境外不可达源站的功能时，优先考虑「换境内出口」而不是重试。
 
+  这个 mesh 地址在仓库里硬编码两次：`apps/gdpm-proxy/compose.yaml` 的 `PROXY_BIND`（代理监听）与 `apps/lems-cloud3/.env` 的 `PROXY_URL`（lems 连接）。**两处必须同值**，否则代理绑不上、lems 采集全部 `failed/network`，与「源站不回包」的现象完全同形。两道守卫：
+  - PR 阶段 `scripts/check-mesh-consistency.sh` 比对两处，不一致直接红；
+  - 代理启动时绑不上地址，重试 12 次（60s，等 easytier tun0 起来）后**退出并列出两处路径与当前网卡地址**，不再无限重试。
+
+  地址来源是 `/opt/easytier/config/default.conf` 的固定配置（不是 DHCP），正常不会漂；改 mesh 网段时按上面两处一起改。
+
 ## 六、故障后重建顺序
 
 1. 云厂商侧：放行 35776(SSH) / 80 / 443 / 6443 / 10250

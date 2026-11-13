@@ -21,6 +21,8 @@ ALLOW = {h.strip().lower() for h in ALLOW if h.strip()}
 PORT = int(os.environ.get("PROXY_PORT", "3128"))
 BIND = os.environ.get("PROXY_BIND", "0.0.0.0")
 BUFSIZE = 65536
+# 绑不上（mesh 网卡还没起来）的重试次数：60s 足够 easytier 启动，再多就是在等一个写错的地址
+BIND_RETRIES = int(os.environ.get("PROXY_BIND_RETRIES", "12"))
 
 
 def allowed(host: str) -> bool:
@@ -30,6 +32,22 @@ def allowed(host: str) -> bool:
 
 def log(msg: str) -> None:
     print(f"[proxy] {msg}", flush=True)
+
+
+def local_addrs() -> list:
+    """本机 IPv4 地址，仅用于绑定失败时把「实际有什么」打进错误信息。"""
+    addrs = []
+    try:
+        import subprocess
+
+        out = subprocess.run(["ip", "-4", "-o", "addr"], capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) > 3:
+                addrs.append(f"{parts[1]}={parts[3]}")
+    except Exception:
+        pass
+    return addrs or ["（无法读取网卡列表）"]
 
 
 class Handler(socketserver.BaseRequestHandler):
@@ -129,13 +147,24 @@ if __name__ == "__main__":
     if not ALLOW:
         sys.exit("PROXY_ALLOW 为空，拒绝启动（否则就是开放代理）")
     # 绑定的是 mesh 网卡地址（easytier tun0）。容器随 docker 自启，但 tun0 可能要更晚
-    # 才出现；绑不上就重试，而不是让容器进入 restart 循环等 docker 重拉。
-    while True:
+    # 才出现；先重试等它（60s），仍然绑不上就**退出**而不是永远重试：
+    # 地址写错时这里会每 5s 打一行日志，docker 侧看是「一直在跑」，而 lems 侧只是
+    # 采集 failed/network —— 与源站故障无法区分。宁可让容器明确 exit。
+    for attempt in range(1, BIND_RETRIES + 1):
         try:
             srv = Server((BIND, PORT), Handler)
             break
         except OSError as e:
-            log(f"绑定 {BIND}:{PORT} 失败（{e}），5s 后重试")
+            log(f"绑定 {BIND}:{PORT} 失败（{e}）第 {attempt}/{BIND_RETRIES} 次，5s 后重试")
             time.sleep(5)
+    else:
+        sys.exit(
+            f"绑定 {BIND}:{PORT} 连续 {BIND_RETRIES} 次失败，地址不存在于本机网卡。\n"
+            f"  两处必须同时改：\n"
+            f"    apps/gdpm-proxy/compose.yaml  environment.PROXY_BIND（本进程监听 {BIND}）\n"
+            f"    apps/lems-cloud3/.env         PROXY_URL（lems 连的是这个地址）\n"
+            f"  当前网卡地址：" + ", ".join(local_addrs()) + "\n"
+            f"  PR 阶段由 scripts/check-mesh-consistency.sh 拦这一类不一致。"
+        )
     log(f"listening on {BIND}:{PORT}, allow={sorted(ALLOW)}")
     srv.serve_forever()

@@ -88,6 +88,11 @@ jobs:
           # 不拖到部署时才发现拉不动镜像。
           bash scripts/check-registries.sh "${dir}" "${{ matrix.item.target }}"
 
+          # 跨单元引用一致性：gdpm-proxy 的 PROXY_BIND 与 lems-cloud3 的 PROXY_URL 是同一个
+          # mesh 地址的两次硬编码。两处不一致时，表现是采集 failed/network（与源站故障同形），
+          # 所以在这里拦住，不拖到线上。脚本内部只校验本单元相关的组合。
+          bash scripts/check-mesh-consistency.sh "${dir}"
+
           case "${mode}" in
             native)
               # native 单元非容器交付：校验部署脚本语法与期望状态文件齐备
