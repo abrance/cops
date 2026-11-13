@@ -186,6 +186,8 @@ MinIO bucket `vikunja`、仓库单元 `apps/vikunja/` 与 CI env 映射，DNS `v
 - `docker.io` 与 `ghcr.io` 都能直连：token/manifest/blob 全通，实测 6.9 / 7.9 MB/s，**不需要镜像加速器，也不需要旧云主机那套 `ghcr.chenby.cn` 替换**
 - 80/443 上的 404 是 Traefik 默认页，不是故障
 - 未认证访问已确认被拦：`https://186.244.201.55:6443/api` → 401，kubelet 10250 → 401
+- **出口 IP 在境外（美国 Colorado），部分境内源站不回包**：`pm.gd.csg.cn` 是最典型的一例 —— TCP 443 建连成功、TLS 握手成功，但 HTTP 响应体永远是 0 字节；同一 URL 从 cloud2（上海）和本机（深圳）都是 200 / 2561 bytes。不是 MTU 黑洞（pypi 192KB 响应正常）。
+  因此 `apps/lems-cloud3` 注入了 `HTTPS_PROXY=http://10.193.0.9:3128`（走 easytier mesh 到 cloud2 上的 `apps/gdpm-proxy` 白名单代理），并用 `NO_PROXY` 把**本来就直连正常**的外站（微信、七牛、自家域名、energydc.cn）排除在代理之外。新增依赖境外不可达源站的功能时，优先考虑「换境内出口」而不是重试。
 
 ## 六、故障后重建顺序
 
