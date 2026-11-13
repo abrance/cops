@@ -67,3 +67,16 @@ HostPath 数据也要手工清 `/var/lib/rancher/k3s/storage/pvc-5fe66e2b-*`）�
 
 前两处只能扛「误删库 / 误删 PVC / 重建命名空间」；盘坏或 cloud3 整体丢失时只剩 NAS 那份。
 每天 03:00 的 Job 会把 dump 传到 NAS 并回读 sha256，不一致即 Job 失败（不会静默只留本地）。
+
+**NAS 侧权限是手工操作，不在 GitOps 里**：`/pool1_8t/public/backup/pg` 的 `700` 与文件 `600` 是
+2026-11-13 手工设的（此前 `775/644`，NAS 上任意本地用户可读，而 `pg-globals-*.sql` 带 SCRAM 口令校验子）。
+换盘、重装 NAS 或恢复 `/pool1_8t` 之后权限会回到默认值，**恢复完必须先重设再让 cron 继续跑**：
+
+```sh
+ssh xiaoy@10.193.0.5 'chmod 700 /pool1_8t/public/backup/pg && chmod 600 /pool1_8t/public/backup/pg/*'
+```
+
+**恢复演练（2026-11-13 实测，唯一一次）**：把 NAS 上的 `pg-llmbm-20261113.dump` 拉回 cloud3，
+`pg_restore` 进临时库 `llmbm_drill`（`-U xiaoy` 超级用户，注意本实例没有 `postgres` 角色、
+连库必须显式 `-d postgres`），比对 `results` 表：行数 1/1、全表内容 md5 与线上逐位一致，演练后已删临时库。
+定期重跑这条：**没演练过的 dump 等于没有 dump**（见 [best-practices](best-practices.md)）。
