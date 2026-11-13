@@ -222,3 +222,42 @@ logging:
 - 不要让环境组件引用 apps 网络/卷（`external: true`）。
 - 不要在 `apps/` 与 `environment/` 之间重名。
 - 不要直推 `main`：走分支 + PR。
+
+## 16. 生产节点上的压测/编译/批处理必须限内存
+
+**做法**：只要命令是"跑得久、吃内存、与业务无关"的那一类（压测、benchmark、编译大
+项目、一次性数据处理、回放工具），一律带上内存上限，不要以普通用户身份裸跑。
+
+```bash
+systemd-run --scope -p MemoryMax=2G -p MemorySwapMax=0 -- ./replay_bench -p 8
+```
+
+- `MemoryMax` 超出时只会杀掉这**一个** scope 里的进程，不会波及 pod。
+- `MemorySwapMax=0` 是为了让超限立刻失败，而不是先去换页拖垮整机 IO；cloud3 本来
+  就没开 swap，显式写上是为了在别的节点上也成立。
+- 编译类（`cargo build`、`go build`、`make -j`）同样适用：链接阶段常是内存峰值，
+  加上 `-j` 并行后更容易翻倍。
+
+**原因**：2026-11-09 20:13Z 的 cloud3 全节点 OOM 就是这么来的。当时在宿主机 `/tmp`
+编译并运行 `replay_bench`，峰值 anon-rss 1.48 GB，**没有任何内存上限**，宿主进程的
+`oom_score_adj=0`，而容器的 `oom_score_adj` 在 2~1000 之间。内核 OOM killer 按分数
+从高到低杀，于是：
+
+| 时间（UTC） | 被杀对象 | 说明 |
+| --- | --- | --- |
+| 20:13:33 | `dataserver` | 第一个死者 |
+| 20:14:19 | `python`（model-forecast） | |
+| 20:14:34 | `ocr-service` | 只拿到 `Error/137`，不是 `OOMKilled` |
+| 20:15:22 | `emsdevice` | 7 Mi 用量，纯躺枪 |
+| 20:15:25~35 | `vminsert`、`vmselect`、`coredns`、`gse-server` … | 集群面整体塌了一遍 |
+
+肇事进程活到了最后。全程日志是 `constraint=CONSTRAINT_NONE ... global_oom`（整机
+内存见底，不是某个 cgroup 超限），节点**没有重启**——`uptime` 连续、k3s
+`NRestarts=0`。唯一的服务可用性损失，全部来自那次裸跑。
+
+**判据**：`dmesg | grep -c global_oom` 非零就说明发生过整机 OOM，此时不要按"某个
+pod 内存不够"去查 `limits`，先找宿主上 `oom_score_adj=0` 的大进程。
+
+**现状（2026-11）**：kubelet 的 `systemReserved` / `kubeReserved` 都还没设，
+`enforceNodeAllocatable` 只有 `pods`，所以 pod 的可分配额里并没有为系统进程留出
+余量——这会让本条的后果更严重，见 `docs/cloud3.md` 待办。

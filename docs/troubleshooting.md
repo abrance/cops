@@ -320,3 +320,57 @@ kubectl -n cops logs deploy/<名字> --tail=50
 - 证书还没签发完：ACME 需要几十秒，重跑一次部署通常就好了。
 - IngressRoute 只写了一条（`[web, websecure]` + `tls`）：Traefik v3 只会生成 websecure 路由器，
   80 端口与 HTTP-01 挑战都会 404。必须拆两条。
+
+## 节点级故障（cloud3 单机，全集群一起抖）
+
+### 一批 pod 同时重启，`reason` 却各不相同
+
+**先判是不是整机 OOM，别逐个 pod 查 `limits`。**
+
+```bash
+# 1) 有没有发生过整机 OOM
+sudo dmesg -T | grep -E "Out of memory|invoked oom-killer" | tail -20
+sudo journalctl -k --since "2026-11-09 20:00" --until "2026-11-09 20:40" | grep -c global_oom
+
+# 2) 节点有没有重启过（对比两个数：都不该变）
+uptime -s
+systemctl show k3s -p NRestarts -p ExecMainStartTimestamp
+```
+
+判读：
+
+| 现象 | 含义 |
+| --- | --- |
+| 日志有 `constraint=CONSTRAINT_NONE ... global_oom` | 整机内存见底，内核按 `oom_score_adj` 杀进程；**不是**容器超自己的 limit |
+| `oom_score_adj=<高值>` 的 pod 被杀 | 容器被 k8s 设了 2~1000 的分数，天然比宿主进程优先被杀 |
+| 有的 pod 是 `OOMKilled`、有的是 `Error` | global OOM 不走容器 cgroup 记账：被杀时该 cgroup 的 anon 太小（刚重启完）就记不到 `oom_kill`，kubelet 只能标 `Error` |
+| `Node Ready lastTransitionTime` 很新但 `uptime` 连续 | 那是 NotReady→Ready 的恢复时间，不是开机时间 |
+
+**再找肇事者**：`global_oom` 时内核会 dump 进程表，按 anon-rss 排序，宿主手工进程
+（`oom_score_adj=0`）通常排第一。对照该时间点前后 `/tmp` 里新增的二进制、`bash`
+history、`sudo` 日志里的命令。
+
+**根因模板**（2026-11-09 实例）：宿主机 `/tmp/replay_bench` 裸跑压测，anon 1.48 GB、
+无 `MemoryMax`，把整机吃到 15.5/15.99 GB → global OOM → 连杀 `dataserver`、
+`model-forecast`、`model-jev`、`ocr-service`、`emsdevice`、`vminsert`、`vmselect`、
+`coredns`、`gse-server`。节点全程没重启。预防见
+[best-practices.md 第 16 条](best-practices.md#16-生产节点上的压测编译批处理必须限内存)。
+
+### `curl: (56) Recv failure` 之后 `kubectl` 全部超时
+
+大概率是同一波内存压力把 kubelet 饿死了：
+
+```bash
+sudo journalctl -u k3s --since "-10min" | grep -E "PLEG is not healthy|container runtime is down"
+cat /proc/meminfo | head -3          # MemFree 只剩几百 MB 就是它
+```
+
+`PLEG is not healthy: pleg was last seen active 3m23s ago` 表示 kubelet 已经 3 分多钟
+没能和容器运行时握手，此时新 pod 不会启动、`kubectl logs` 也会挂住。内存压力解除后
+会自己恢复，不需要重启 k3s。
+
+### SQLite 类服务（`lems`、`emsdevice`）在 OOM 后数据是否安全
+
+`emsdevice`/`lems` 走 WAL，被 `SIGKILL` 不会产生半写事务，重启后 SQLite 自己回放
+`-wal` 即可。要确认就查 `PRAGMA integrity_check`，详见
+[lems 数据备份](troubleshooting.md#lems-数据备份sqlite-wal2026-11-12-起)。
