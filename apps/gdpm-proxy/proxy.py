@@ -35,19 +35,39 @@ def log(msg: str) -> None:
 
 
 def local_addrs() -> list:
-    """本机 IPv4 地址，仅用于绑定失败时把「实际有什么」打进错误信息。"""
-    addrs = []
+    """本机 IPv4 地址，仅用于绑定失败时把「实际有什么」打进错误信息。
+
+    镜像里没有 iproute2（python:3.12-slim），所以先试 `ip`，退到 /proc/net/fib_trie。
+    network_mode: host 下 /proc 反映的是宿主路由表，地址与宿主一致。
+    """
     try:
         import subprocess
 
         out = subprocess.run(["ip", "-4", "-o", "addr"], capture_output=True, text=True, timeout=5).stdout
+        addrs = []
         for line in out.splitlines():
             parts = line.split()
             if len(parts) > 3:
                 addrs.append(f"{parts[1]}={parts[3]}")
+        if addrs:
+            return addrs
     except Exception:
         pass
-    return addrs or ["（无法读取网卡列表）"]
+    try:
+        # 只取 host LOCAL 条目：link/broadcast 行会把网段地址也列出来，容易误读。
+        with open("/proc/net/fib_trie", encoding="ascii", errors="replace") as f:
+            lines = f.read().splitlines()
+        found = []
+        for i, line in enumerate(lines):
+            if "/32 host LOCAL" in line and i > 0:
+                ip = lines[i - 1].split("|")[-1].strip().strip("+- ").strip()
+                if ip.count(".") == 3:
+                    found.append(ip)
+        if found:
+            return sorted(set(found))
+    except Exception:
+        pass
+    return ["（无法读取网卡列表）"]
 
 
 class Handler(socketserver.BaseRequestHandler):
