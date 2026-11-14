@@ -1,0 +1,79 @@
+# gdpm 期望状态：官方披露接口（pm.gd.csg.cn）的日频采集，一天一次。
+#
+# 写的是 lems 的 sqlite（PVC lems-data，与 apps/lems-cloud3 同一块盘）：
+# 抓取成功 → gd_spot_metric（origin=pm-api）+ gd_pm_fetch_run 一行 status=ok；
+# 抓取失败 → 只补一行 status=failed（不写半份指标），退出码非零。
+# 所以「今天采到没有」只看 gd_pm_fetch_run 的最新一行，页面上的 failed 告警也来自这里。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: gdpm
+  namespace: ${K8S_NAMESPACE}
+  labels:
+    app: gdpm
+spec:
+  schedule: "${GDPM_SCHEDULE}"
+  timeZone: "${GDPM_TIMEZONE}"
+  # 上一轮没跑完就不叠新一轮：整表重拉要几十秒，叠加只会互相抢 sqlite 写锁
+  concurrencyPolicy: Forbid
+  # 机器重启/调度失败时，错过的这一轮也要补跑（窗口 1 小时内有效）
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      # 采集失败已在库里留痕、退出码为 1，重试没有意义（源站整站不可用时也不会自愈）
+      backoffLimit: 0
+      # 抓取约 16 次请求、几十秒；20 分钟还没完说明卡死，杀掉让人看见
+      activeDeadlineSeconds: 1200
+      template:
+        metadata:
+          labels:
+            app: gdpm
+        spec:
+          restartPolicy: Never
+          securityContext:
+            # 镜像里默认用户是 gdpm(10001)，而生产库 db.sqlite3 属主是 1001、PVC 目录属主是 root。
+            # lems 自己在容器里也是 root 跑的，这里对齐它，避免为一份只被两个进程读写的
+            # sqlite 去重排文件属主。
+            runAsUser: 0
+            runAsGroup: 0
+          containers:
+            - name: gdpm
+              image: ${GDPM_IMAGE}:${GDPM_IMAGE_TAG}
+              imagePullPolicy: IfNotPresent
+              # 镜像自带 ENTRYPOINT /app/entrypoint.sh（抓取 → 入库 → 一行摘要）
+              env:
+                - name: TZ
+                  value: "${GDPM_TIMEZONE}"
+                - name: GDPM_DB
+                  value: "${GDPM_DB}"
+                - name: GDPM_WORK_DIR
+                  value: /tmp/gdpm
+                # 出口代理：大小写都写，urllib 读小写优先、部分子库只读大写
+                - name: HTTPS_PROXY
+                  value: "${PROXY_URL}"
+                - name: HTTP_PROXY
+                  value: "${PROXY_URL}"
+                - name: https_proxy
+                  value: "${PROXY_URL}"
+                - name: http_proxy
+                  value: "${PROXY_URL}"
+                - name: NO_PROXY
+                  value: "${NO_PROXY}"
+                - name: no_proxy
+                  value: "${NO_PROXY}"
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              volumeMounts:
+                - name: lems-data
+                  mountPath: /app/out
+          volumes:
+            - name: lems-data
+              persistentVolumeClaim:
+                claimName: ${LEMS_DATA_CLAIM}

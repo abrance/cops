@@ -32,6 +32,7 @@
 | --- | --- | --- | --- |
 | `lems` | `lems`、`emsdevice` | `ghcr.chenby.cn/abrance/ems`、`ghcr.chenby.cn/abrance/emsdevice` | default（cloud2）上的旧 Compose 部署：EMS 主服务与 ess_demo Modbus 从站 |
 | `lems-cloud3` | `lems`、`emsdevice` | `ghcr.io/abrance/ems:v1.0.56`、`ghcr.io/abrance/emsdevice:v1.0.56` | cloud3（k8s），入口 `https://ems.xiaoyxq.top`；**有状态**，SQLite 与 Prometheus TSDB 在 PVC `cops/lems-data`（10Gi）；emsdevice 是 ess_demo Modbus 从站，lems 以 Service 名 `emsdevice:1502` 访问它 |
+| `gdpm` | —（CronJob，无常驻容器） | `ghcr.io/abrance/ems-gdpm:v1.0.78` | cloud3（k8s）上的**官方披露接口日采集**：CronJob 每天 08:20（Asia/Shanghai）整表重拉 pm.gd.csg.cn 日频数据并写入 lems 的 sqlite（PVC `cops/lems-data`）；抓取失败只写 `gd_pm_fetch_run` 一行 `status=failed` 不写半份指标；出口经 cloud2 的 `gdpm-proxy`（境外 IP 打源站响应体恒 0 字节）；源码见 ems 仓库 `tools/gdpm` |
 | `model-ocr` | `model-ocr` | `ghcr.chenby.cn/abrance/modelman-ocr` | PP-OCR 文字识别服务（MNN/CPU）；已迁 cloud3（k8s），lems 经公网入口 `https://ocr.xiaoyxq.top` 调用；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `model-logcluster` | `model-logcluster` | `ghcr.chenby.cn/abrance/modelman-logcluster` | Drain3 日志模板聚类服务（Python/FastAPI）；只监听 `127.0.0.1:9103`；**有状态**，模板树持久化在命名卷 `model-logcluster_state`；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
 | `ptdoc` | `ptdoc` | `ghcr.chenby.cn/abrance/ptdoc` | Markdown 文档站；数据保留在 `/opt/ptdoc` |
@@ -40,7 +41,7 @@
 | `llmbm` | `llmbm` | `ghcr.io/abrance/llmbm:v0.2.0` | LLM 能力基准测试台（题库跑测 + 能力分）；cloud3（k8s），入口 `https://llmbm.xiaoyxq.top`（A 记录指向 cloud3 公网 IP，证书由 Traefik 自动签；旧 `llmbm.186.244.201.55.sslip.io` 已弃用）；**有状态**，结果库在 `pg` 单元的 `llmbm` 库（SQLite 卷 `cops/llmbm-data` 仅作回滚后端）；**单镜像**（api 进程内托管前端产物，容器端口 8787）；模型 Key 只在浏览器 localStorage，服务端不持有，故无运行期密钥；源码仓库 [abrance/llmbm](https://github.com/abrance/llmbm) |
 | `openbao` | `openbao` | `quay.io/openbao/openbao` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
-单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`model-ocr`/`model-logcluster`/`model-forecast`/`model-jev`/`llmbm`/`openbao`/`pg`/`minio`/`mysql8` 在 `cloud3`，其余在 `default`。
+单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`gdpm`/`model-ocr`/`model-logcluster`/`model-forecast`/`model-jev`/`llmbm`/`openbao`/`pg`/`minio`/`mysql8` 在 `cloud3`，其余在 `default`。
 
 ## 已纳管环境组件
 
@@ -69,6 +70,10 @@
 │   │   ├── .env           # 非敏感变量（随仓库提交）
 │   │   └── emsdevice.json # Modbus 从站配置（含光伏/负载/关口电表/储能柜点表）
 │   ├── lems-cloud3/       # cloud3 上的 LEMS 主应用（K8s；不含 emsdevice）
+│   │   ├── app.conf
+│   │   ├── .env
+│   │   └── k8s.yaml
+│   ├── gdpm/              # cloud3 上的官方披露接口日采集（CronJob，写 lems 的 sqlite）
 │   │   ├── app.conf
 │   │   ├── .env
 │   │   └── k8s.yaml
