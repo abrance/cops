@@ -60,7 +60,7 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 
 | 变量名 | L1 GitHub | L2 主机文件 | L3 k8s Secret | 长度 | 上次写入 (UTC) | 引用单元 | 影响面 / 验证 |
 |---|---|---|---|---|---|---|---|
-| `GSE_AGENT_TOKEN` | ✔ | `vectorman.env` (600) | `vectorman/gse-agent-token`（key `token`）、`vectorman/vectorman-secrets` | 27 | 2026-11-09T06:41:08Z | `apps/vectorman`（REQUIRED_ENV+SECRET_ENV） | gse-agent DaemonSet 注册；换错则 DaemonSet 注册失败。验证：`gse-agent` Pod 日志无注册报错 |
+| `GSE_AGENT_TOKEN` | ✔ | `vectorman.env` (600) | `vectorman/vectorman-secrets`（**已无消费者**） | 27 | 2026-11-09T06:41:08Z | —（2026-11-15 起 `apps/vectorman` 不再声明） | gse-agent 从 DaemonSet 改成 cloud3 宿主机 systemd 进程后，token 落在 `/opt/vectorman/gse-agent/conf/gse-agent.toml`（600），本管道只当存档、不再刷新。验证：`systemctl is-active vectorman-gse-agent` + console 上该 Agent 在线 |
 | `COMMON_SIMPLE_PASSWORD` | ✔ | `pg.env`/`minio.env`/`mysql8.env` (600) | `pg/pg-secrets`、`minio/minio-secrets`、`mysql8/mysql8-secrets` | 11 | 2026-10-14T10:29:53Z | mysql8、minio、pg（经 `MINIO_ROOT_PASSWORD` 映射） | **一个值覆盖三个组件**（有意复用避免漂移）。验证：三者 Pod 均能连自身 DB/MinIO |
 | `POSTGRES_PASSWORD` | ✔ | `pg.env` (600) | `pg/pg-secrets` | 48 | 2026-11-12T20:15:53Z | `apps/pg`（REQUIRED_ENV+SECRET_ENV） | Postgres 超级用户；换掉须同步改库内口令 |
 | `LLMBM_DB_PASSWORD` | ✔ | `pg.env` (600) | `pg/pg-secrets` | 48 | 2026-11-12T20:15:55Z | `apps/pg`、`apps/llmbm` | llmbm 应用角色口令；注意 `cops/llmbm-pg` 里的 `LLMBM_PG_URL` 含该口令的连接串，轮换须一并重建 |
