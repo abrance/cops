@@ -65,6 +65,9 @@ spec:
         runAsUser: 100
         runAsGroup: 101
         fsGroup: 101
+      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 cops 命名空间的 ghcr-pull）。
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: llmbm
           image: ${LLMBM_IMAGE}:${LLMBM_IMAGE_TAG}

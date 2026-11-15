@@ -48,6 +48,9 @@ spec:
       labels:
         app: model-logcluster
     spec:
+      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 cops 命名空间的 ghcr-pull）。
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: model-logcluster
           image: ${MODEL_LOGCLUSTER_IMAGE}:${MODEL_LOGCLUSTER_IMAGE_TAG}
