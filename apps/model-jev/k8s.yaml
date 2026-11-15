@@ -49,9 +49,6 @@ spec:
       labels:
         app: model-jev
     spec:
-      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 cops 命名空间的 ghcr-pull）。
-      imagePullSecrets:
-        - name: ghcr-pull
       containers:
         - name: model-jev
           image: ${MODEL_JEV_IMAGE}:${MODEL_JEV_IMAGE_TAG}
