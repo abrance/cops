@@ -79,6 +79,9 @@ spec:
       # 注解变了 → podTemplate 变 → Deployment 自动滚动新 Pod。不要手工加注解。
     spec:
       terminationGracePeriodSeconds: 20
+      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 vectorman 命名空间的 ghcr-pull）。
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: gse-server
           image: ${VECTORMAN_IMAGE}:${VECTORMAN_IMAGE_TAG}
@@ -234,6 +237,9 @@ spec:
         app: dataserver
     spec:
       terminationGracePeriodSeconds: 30
+      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 vectorman 命名空间的 ghcr-pull）。
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: dataserver
           image: ${VECTORMAN_IMAGE}:${VECTORMAN_IMAGE_TAG}
@@ -378,6 +384,9 @@ spec:
       labels:
         app: console
     spec:
+      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 vectorman 命名空间的 ghcr-pull）。
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: console
           image: ${VECTORMAN_IMAGE}:${VECTORMAN_IMAGE_TAG}
@@ -612,6 +621,10 @@ spec:
       # 单节点也写上：将来节点打 taint（专用/维护）时 Agent 仍然要落上去。
       tolerations:
         - operator: Exists
+      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 vectorman 命名空间的 ghcr-pull）。
+      # gse-agent 自己走 docker.io，但同一 podTemplate 里加上无副作用。
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: gse-agent
           image: ${AGENT_IMAGE}:${AGENT_IMAGE_TAG}

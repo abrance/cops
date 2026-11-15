@@ -69,6 +69,9 @@ spec:
           volumeMounts:
             - name: lems-data
               mountPath: /app/out
+      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 cops 命名空间的 ghcr-pull）。
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: lems
           image: ${LEMS_IMAGE}:${LEMS_IMAGE_TAG}
@@ -266,6 +269,9 @@ spec:
       labels:
         app: emsdevice
     spec:
+      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 cops 命名空间的 ghcr-pull）。
+      imagePullSecrets:
+        - name: ghcr-pull
       containers:
         - name: emsdevice
           image: ${EMSDEVICE_IMAGE}:${EMSDEVICE_IMAGE_TAG}
