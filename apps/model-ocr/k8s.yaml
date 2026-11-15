@@ -44,9 +44,6 @@ spec:
       labels:
         app: model-ocr
     spec:
-      # 包改为 private 后必须带凭证拉 ghcr.io（token 在 cops 命名空间的 ghcr-pull）。
-      imagePullSecrets:
-        - name: ghcr-pull
       containers:
         - name: model-ocr
           image: ${MODEL_OCR_IMAGE}:${MODEL_OCR_IMAGE_TAG}

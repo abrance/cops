@@ -38,9 +38,6 @@ spec:
             # sqlite 去重排文件属主。
             runAsUser: 0
             runAsGroup: 0
-          # 包改为 private 后必须带凭证拉 ghcr.io（token 在 cops 命名空间的 ghcr-pull）。
-          imagePullSecrets:
-            - name: ghcr-pull
           containers:
             - name: gdpm
               image: ${GDPM_IMAGE}:${GDPM_IMAGE_TAG}
