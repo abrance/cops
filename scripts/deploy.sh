@@ -61,8 +61,8 @@ env_lookup() {
 }
 
 for key in ${REQUIRED_ENV:-}; do
-  if [ -z "$(env_lookup "${key}")" ]; then
-    log "缺少必需变量 ${key}，请写入 ${SECRETS_FILE}"
+  if [ -z "${!key:-}" ] && [ -z "$(env_lookup "${key}")" ]; then
+    log "缺少必需变量 ${key}，请在部署环境导出或写入 ${SECRETS_FILE}"
     exit 1
   fi
 done

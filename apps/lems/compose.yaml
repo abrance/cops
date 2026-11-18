@@ -34,6 +34,12 @@ services:
       QINIU_BUCKET: ${QINIU_BUCKET:-}
       QINIU_DOMAIN: ${QINIU_DOMAIN:-}
       QINIU_ZONE: ${QINIU_ZONE:-z2}
+      # 外部数据源/服务地址：常量来自 .env（密钥仍来自 secrets/lems.env）
+      PRICE_SYNC_BASE_URL: ${PRICE_SYNC_BASE_URL:-}
+      HOME_MARKET_GATEWAY_BASE: ${HOME_MARKET_GATEWAY_BASE:-}
+      GD_METRIC_URL: ${GD_METRIC_URL:-}
+      SPOT_REPORT_WECHAT_HOST: ${SPOT_REPORT_WECHAT_HOST:-}
+      FORECAST_BASE_URL: ${FORECAST_BASE_URL:-}
       # OCR 服务（model-ocr 单元，已迁 cloud3 的 k3s）：走公网入口 https://ocr.xiaoyxq.top，
       # 证书由 Traefik 自动签发（历史同机方案走 cops-shared 网络直连，已废弃）
       OCR_BASE_URL: ${OCR_BASE_URL:-}

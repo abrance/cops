@@ -45,7 +45,7 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 ### 2.2 lems / lems-cloud3 运行期密钥
 
 `apps/lems-cloud3/app.conf`：
-`REQUIRED_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY QINIU_BUCKET QINIU_DOMAIN"`
+`REQUIRED_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY QINIU_BUCKET QINIU_DOMAIN PRICE_SYNC_BASE_URL HOME_MARKET_GATEWAY_BASE"`
 `SECRET_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY EMS_API_STATIC_TOKEN"`
 
 | 变量名 | L1 GitHub | L2 `/opt/cops/secrets/lems-cloud3.env` | L3 `cops/lems-cloud3-secrets` | 长度 | 上次写入 (UTC) | 影响面 | 轮换后验证 |
@@ -54,7 +54,20 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 | `QINIU_SECRET_KEY` | ✔ | ✔ (600) | ✔ | 40 | 2026-09-22T01:54:23Z | 同上 | 同上 |
 | `EMS_API_STATIC_TOKEN` | ✔ | ✔ (600) | ✔ | 11（**偏短，待轮换为 32**） | 2026-11-08T04:16:47Z | ems 静态 token 鉴权，命中即 admin 全权限（读写均放行） | 见第 5 节四条实测 |
 
-注：`QINIU_BUCKET` / `QINIU_DOMAIN` 在 `REQUIRED_ENV` 但**不在** `SECRET_ENV` —— 它们是明文，写在仓库 `apps/lems-cloud3/.env` 里，不属于密钥。
+注：地址类变量在 `REQUIRED_ENV` 但**不在** `SECRET_ENV` —— 它们不属于密钥。URL/域名统一维护在 GitHub Repository variables，部署时由 `scripts/apply-repo-vars.sh` 注入单元 `.env`：
+
+| Repository variable | 注入到 `.env` | 用途 |
+|---|---|---|
+| `LEMS_PRICE_SYNC_BASE_URL` | `PRICE_SYNC_BASE_URL` | 电网分时电价数据源 |
+| `LEMS_HOME_MARKET_GATEWAY_BASE` | `HOME_MARKET_GATEWAY_BASE` | 官网主页 24 点/地市网关 |
+| `LEMS_GD_METRIC_URL` | `GD_METRIC_URL` | 第三方 `gd_metric.csv` 下载地址 |
+| `LEMS_SPOT_REPORT_WECHAT_HOST` | `SPOT_REPORT_WECHAT_HOST` | 公众号文章域名白名单 |
+| `LEMS_FORECAST_BASE_URL` | `FORECAST_BASE_URL` | TimesFM 预测服务地址 |
+| `LEMS_QINIU_DOMAIN` | `QINIU_DOMAIN` | 七牛对象存储访问域名 |
+| `LEMS_OCR_BASE_URL` | `OCR_BASE_URL` | OCR 服务地址 |
+| `GDPM_BASE_URL` | `GDPM_BASE_URL` | gdpm 官方披露接口地址（仅 gdpm 单元） |
+
+`QINIU_BUCKET` / `QINIU_ZONE` 不是 URL，仍写在 `apps/lems-cloud3/.env` 与 `apps/lems/.env`。
 
 ### 2.3 其他单元的密钥
 

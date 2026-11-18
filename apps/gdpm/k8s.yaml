@@ -48,6 +48,8 @@ spec:
                   value: "${GDPM_TIMEZONE}"
                 - name: GDPM_DB
                   value: "${GDPM_DB}"
+                - name: GDPM_BASE_URL
+                  value: "${GDPM_BASE_URL}"
                 - name: GDPM_WORK_DIR
                   value: /tmp/gdpm
                 # 出口代理：大小写都写，urllib 读小写优先、部分子库只读大写

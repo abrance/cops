@@ -72,6 +72,18 @@ jobs:
       - name: 检出仓库
         uses: actions/checkout@v4
 
+      - name: 注入 Repository variables（URL 常量）
+        env:
+          LEMS_PRICE_SYNC_BASE_URL: ${{ vars.LEMS_PRICE_SYNC_BASE_URL }}
+          LEMS_HOME_MARKET_GATEWAY_BASE: ${{ vars.LEMS_HOME_MARKET_GATEWAY_BASE }}
+          LEMS_GD_METRIC_URL: ${{ vars.LEMS_GD_METRIC_URL }}
+          LEMS_SPOT_REPORT_WECHAT_HOST: ${{ vars.LEMS_SPOT_REPORT_WECHAT_HOST }}
+          LEMS_FORECAST_BASE_URL: ${{ vars.LEMS_FORECAST_BASE_URL }}
+          LEMS_QINIU_DOMAIN: ${{ vars.LEMS_QINIU_DOMAIN }}
+          LEMS_OCR_BASE_URL: ${{ vars.LEMS_OCR_BASE_URL }}
+          GDPM_BASE_URL: ${{ vars.GDPM_BASE_URL }}
+        run: bash scripts/apply-repo-vars.sh "${{ matrix.item.scope }}/${{ matrix.item.name }}"
+
       - name: 安装 helm（helm chart 单元的渲染需要）
         uses: azure/setup-helm@v4
         with:
@@ -157,6 +169,18 @@ jobs:
     steps:
       - name: 检出仓库
         uses: actions/checkout@v4
+
+      - name: 注入 Repository variables（URL 常量）
+        env:
+          LEMS_PRICE_SYNC_BASE_URL: ${{ vars.LEMS_PRICE_SYNC_BASE_URL }}
+          LEMS_HOME_MARKET_GATEWAY_BASE: ${{ vars.LEMS_HOME_MARKET_GATEWAY_BASE }}
+          LEMS_GD_METRIC_URL: ${{ vars.LEMS_GD_METRIC_URL }}
+          LEMS_SPOT_REPORT_WECHAT_HOST: ${{ vars.LEMS_SPOT_REPORT_WECHAT_HOST }}
+          LEMS_FORECAST_BASE_URL: ${{ vars.LEMS_FORECAST_BASE_URL }}
+          LEMS_QINIU_DOMAIN: ${{ vars.LEMS_QINIU_DOMAIN }}
+          LEMS_OCR_BASE_URL: ${{ vars.LEMS_OCR_BASE_URL }}
+          GDPM_BASE_URL: ${{ vars.GDPM_BASE_URL }}
+        run: bash scripts/apply-repo-vars.sh "${{ matrix.item.scope }}/${{ matrix.item.name }}"
 
       - name: 解析目标主机并准备 SSH 凭据
         run: |
@@ -270,7 +294,7 @@ jobs:
           # gse-agent-token，值是同一个 vm- 前缀 token）。app.conf 里同时在
           # REQUIRED_ENV 声明：缺它时部署直接失败，不会静默上线一个空 token 的 Agent。
           GSE_AGENT_TOKEN: ${{ secrets.GSE_AGENT_TOKEN }}
-          # lems 七牛云 AK/SK（其余 QINIU_* 为明文，放 apps/lems/.env）
+          # lems 七牛云 AK/SK（其余 QINIU_* 与外部 URL 为明文常量，放 apps/lems/.env 与 apps/lems-cloud3/.env）
           QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
           QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
           # lems（k8s）：静态 API token，容器侧变量名 EMS_API_STATIC_TOKEN。

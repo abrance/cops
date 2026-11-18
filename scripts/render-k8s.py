@@ -28,6 +28,7 @@ kubectl apply）。本地排障时也可以直接跑，`docker compose config` �
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -72,6 +73,11 @@ def render(unit_dir: Path) -> str:
     if conf_file.is_file():
         values.update(parse_env(conf_file))
     source = manifest.read_text(encoding="utf-8")
+
+    # 本地排障时允许从已导出的环境变量补齐（CI 会先把 Repository variables 注入 .env）
+    for name in set(VAR_RE.findall(source)):
+        if name not in values and os.environ.get(name):
+            values[name] = os.environ[name]
 
     missing: dict[str, list[int]] = {}
     for lineno, line in enumerate(source.splitlines(), 1):
