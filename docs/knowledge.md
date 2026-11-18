@@ -21,8 +21,6 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 
 | 单元 | Compose 服务 | `.env` 变量 | 当前完整镜像 |
 | --- | --- | --- | --- |
-| `apps/lems` | `lems` | `LEMS_IMAGE` + `LEMS_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ems:v1.0.65` |
-| `apps/lems` | `emsdevice` | `EMSDEVICE_IMAGE` + `EMSDEVICE_IMAGE_TAG` | `ghcr.chenby.cn/abrance/emsdevice:v1.0.64` |
 | `apps/ptdoc` | `ptdoc` | `PTDOC_IMAGE` + `PTDOC_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc:v1.4.3` |
 | `environment/ptdoc-qdrant` | `qdrant` | `QDRANT_IMAGE` + `QDRANT_IMAGE_TAG` | `docker.io/qdrant/qdrant:v1.19.1` |
 | `environment/ptdoc-qdrant` | `gateway` | `GATEWAY_IMAGE` + `GATEWAY_IMAGE_TAG` | `ghcr.chenby.cn/abrance/ptdoc-qdrant-gateway:1.0.7` |
@@ -33,7 +31,6 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 
 配置来源：
 
-- `apps/lems/.env`、`apps/lems/compose.yaml`
 - `apps/ptdoc/.env`、`apps/ptdoc/compose.yaml`
 - `apps/model-logcluster/.env`、`apps/model-logcluster/compose.yaml`
 - `environment/ptdoc-qdrant/.env`、`environment/ptdoc-qdrant/compose.yaml`
@@ -56,11 +53,6 @@ ghcr.chenby.cn/<组织>/<镜像>:<版本 tag>
 
 ```bash
 docker compose \
-  --project-directory apps/lems \
-  -f apps/lems/compose.yaml \
-  config --quiet
-
-docker compose \
   --project-directory apps/ptdoc \
   -f apps/ptdoc/compose.yaml \
   config --quiet
@@ -74,11 +66,6 @@ docker compose \
 再查看最终展开的镜像名：
 
 ```bash
-docker compose \
-  --project-directory apps/lems \
-  -f apps/lems/compose.yaml \
-  config --images
-
 docker compose \
   --project-directory apps/ptdoc \
   -f apps/ptdoc/compose.yaml \

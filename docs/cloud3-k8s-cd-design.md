@@ -30,7 +30,7 @@
 | --- | --- | --- |
 | 镜像源 | cloud3 访问 `ghcr.chenby.cn` → Cloudflare 403（该 mirror 大概只对旧主机 IP 放行）；`ghcr.io` 匿名拉 `abrance/modelman-ocr:v0.1.3-6476ffb`、`abrance/modelman-logcluster:v0.1.1-4c4f4e1` 均为 200 | k8s 单元镜像直接写 `ghcr.io`，不需要凭据、不需要 imagePullSecret、不需要 mirror |
 | 公网入口 | cloud3 的 80/443 已由 k3s 自带 Traefik 接管，证书由 Traefik 内置 ACME 自动签发（见 cloud3.md） | 单元入口用 IngressRoute，不需要自建反代 |
-| 跨主机互访 | `apps/lems/.env` 里 `OCR_BASE_URL=http://model-ocr:8080`，靠旧主机的 `cops-shared` Docker 网络直连容器名 | model-ocr 搬到 cloud3 后 lems 走不了内网，必须改指向公网入口 |
+| 跨主机互访 | 旧 `apps/lems`（cloud2 单元，已下线）的 `.env` 里 `OCR_BASE_URL=http://model-ocr:8080`，靠旧主机的 `cops-shared` Docker 网络直连容器名 | model-ocr 搬到 cloud3 后 lems 走不了内网，必须改指向公网入口 |
 | k3s 侧凭据 | cloud3 上 `xiaoy` 已有可用的 `~/.kube/config` | CI 复用 SSH 通道执行，kubeconfig 不必进 GitHub Secrets |
 | ClusterIP 可达性 | 从 cloud3 主机 `curl http://<Service ClusterIP>/` → 200 | 健康探活可以直接从主机打 Service，不需要进 Pod 或起临时容器 |
 
@@ -272,7 +272,7 @@ host 端口不再由单元声明：cloud3 上唯一对外入口是 Traefik 的 8
 
 ### 4.7 调用方改动
 
-`apps/lems/.env`：`OCR_BASE_URL=http://model-ocr:8080` → `https://ocr.xiaoyxq.top`。
+旧 `apps/lems`（已下线）的 `.env`：`OCR_BASE_URL=http://model-ocr:8080` → `https://ocr.xiaoyxq.top`。
 
 其余 `.env` / `app.conf` 不变（`SHARED_NETWORKS` 在 k8s 侧没有对应物，由 Service DNS 取代；lems 不改网络声明，只是不再有同网对端）。
 
@@ -346,7 +346,7 @@ ssh cloud3 'sudo chown -R <uid>:<gid> /var/lib/rancher/k3s/storage/pvc-<uid>_cop
 
 ### 第 3 步：PR3 — 迁 `model-ocr`
 
-内容：新增 `k8s.yaml`；`app.conf` 改为 k8s；删除 `compose.yaml`；`apps/lems/.env` 的 `OCR_BASE_URL` 改为 `https://ocr.xiaoyxq.top`。
+内容：新增 `k8s.yaml`；`app.conf` 改为 k8s；删除 `compose.yaml`；旧 `apps/lems`（已下线）的 `OCR_BASE_URL` 改为 `https://ocr.xiaoyxq.top`。
 
 无状态，不需要搬数据。停机窗口 = lems 切到新地址前后的一小段。
 

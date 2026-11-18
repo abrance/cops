@@ -294,7 +294,7 @@ jobs:
           # gse-agent-token，值是同一个 vm- 前缀 token）。app.conf 里同时在
           # REQUIRED_ENV 声明：缺它时部署直接失败，不会静默上线一个空 token 的 Agent。
           GSE_AGENT_TOKEN: ${{ secrets.GSE_AGENT_TOKEN }}
-          # lems 七牛云 AK/SK（其余 QINIU_* 与外部 URL 为明文常量，放 apps/lems/.env 与 apps/lems-cloud3/.env）
+          # lems 七牛云 AK/SK（其余 QINIU_* 为明文常量，放 apps/lems-cloud3/.env；URL 在 Repository variables）
           QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
           QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
           # lems（k8s）：静态 API token，容器侧变量名 EMS_API_STATIC_TOKEN。

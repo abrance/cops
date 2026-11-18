@@ -4,7 +4,7 @@
 # 为什么不在仓库里写死：URL/域名属于部署常量，放在 GitHub Repository variables
 # 更好读、改完重跑部署即可，不用改代码；单元 .env 只保留镜像、端口、资源等状态。
 #
-# 用法：scripts/apply-repo-vars.sh apps/lems
+# 用法：scripts/apply-repo-vars.sh apps/lems-cloud3
 #
 # 变量名映射：仓库 variable 名 -> 单元 .env 里的键名。
 # 缺任何一个都会非零退出——不允许带着空地址上线。
@@ -17,7 +17,7 @@ env_file="${dir}/.env"
 [ -f "${env_file}" ] || exit 0
 
 case "${dir}" in
-  apps/lems|apps/lems-cloud3)
+  apps/lems-cloud3)
     pairs="
       PRICE_SYNC_BASE_URL=LEMS_PRICE_SYNC_BASE_URL
       HOME_MARKET_GATEWAY_BASE=LEMS_HOME_MARKET_GATEWAY_BASE

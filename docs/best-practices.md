@@ -153,7 +153,7 @@ logging:
 只留下"服务突然重启"。云主机根分区有限，无上限的 json-file 日志会持续增长。
 
 **现状（2026-09）**：日志上限所有单元都声明了；内存/CPU 上限目前只有 `model-ocr`
-与 `model-logcluster` 声明，`lems`、`ptdoc`、`ptdoc-qdrant` 还没有。新增单元按上面的
+与 `model-logcluster` 声明，`ptdoc`、`ptdoc-qdrant` 还没有。新增单元按上面的
 做法补齐，不要照抄现有单元的省略。
 
 ## 11. 回滚靠改 tag

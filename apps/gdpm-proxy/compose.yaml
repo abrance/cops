@@ -18,7 +18,7 @@ services:
   gdpm-proxy:
     build: .
     image: gdpm-proxy:1
-    # 同 lems-backup：显式 build，避免 compose pull 去 registry 找一个不存在的同名镜像
+    # 显式 build，避免 compose pull 去 registry 找一个不存在的同名镜像
     pull_policy: build
     container_name: gdpm-proxy
     restart: unless-stopped

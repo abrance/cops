@@ -7,7 +7,7 @@
 1. **默认走 cops 单元**：cloud3 上新增或变更服务，必须纳入本仓库 `apps/<name>/` 或 `environment/<name>/`，并走 CI 渲染、同步和部署；不要在主机上临时手工执行 `helm install` 或 `kubectl apply` 部署服务。
 2. **例外须说明并报备**：仅集群级组件（如 k3s 自身、Traefik、CRD、Gateway API）或确实无法适配 cops 单元的情况可例外；实施前须写明原因并报给参谋长。
 
-> cloud3 的 k8s 单元指 `apps/<name>/k8s.yaml`（经 CI 渲染后 apply 到 k3s）。`apps/lems`、`apps/ptdoc` 是旧云主机 Docker Compose 流程的目录；cloud3 的 LEMS 独立由 `apps/lems-cloud3` 管理。
+> cloud3 的 k8s 单元指 `apps/<name>/k8s.yaml`（经 CI 渲染后 apply 到 k3s）。`apps/ptdoc` 等是旧云主机 Docker Compose 流程的目录；LEMS 由 cloud3 的 `apps/lems-cloud3` 管理。
 
 ## 架构
 
@@ -30,7 +30,6 @@
 
 | 应用 | 容器 | 镜像 | 说明 |
 | --- | --- | --- | --- |
-| `lems` | `lems`、`emsdevice` | `ghcr.chenby.cn/abrance/ems`、`ghcr.chenby.cn/abrance/emsdevice` | default（cloud2）上的旧 Compose 部署：EMS 主服务与 ess_demo Modbus 从站 |
 | `lems-cloud3` | `lems`、`emsdevice` | `ghcr.io/abrance/ems:v1.0.56`、`ghcr.io/abrance/emsdevice:v1.0.56` | cloud3（k8s），入口 `https://ems.xiaoyxq.top`；**有状态**，SQLite 与 Prometheus TSDB 在 PVC `cops/lems-data`（10Gi）；emsdevice 是 ess_demo Modbus 从站，lems 以 Service 名 `emsdevice:1502` 访问它 |
 | `gdpm` | —（CronJob，无常驻容器） | `ghcr.io/abrance/ems-gdpm:v1.0.78` | cloud3（k8s）上的**官方披露接口日采集**：CronJob 每天 08:20（Asia/Shanghai）整表重拉 pm.gd.csg.cn 日频数据并写入 lems 的 sqlite（PVC `cops/lems-data`）；抓取失败只写 `gd_pm_fetch_run` 一行 `status=failed` 不写半份指标；出口经 cloud2 的 `gdpm-proxy`（境外 IP 打源站响应体恒 0 字节）；源码见 ems 仓库 `tools/gdpm` |
 | `model-ocr` | `model-ocr` | `ghcr.chenby.cn/abrance/modelman-ocr` | PP-OCR 文字识别服务（MNN/CPU）；已迁 cloud3（k8s），lems 经公网入口 `https://ocr.xiaoyxq.top` 调用；源码仓库 [abrance/modelman](https://github.com/abrance/modelman) |
@@ -64,11 +63,6 @@
 ```text
 .
 ├── apps/                  # 应用（一个目录 = 一个独立部署单元）
-│   ├── lems/
-│   │   ├── app.conf       # 应用元数据：健康检查容器 / 超时 / 探测地址 / 必需变量
-│   │   ├── compose.yaml   # 期望状态编排
-│   │   ├── .env           # 非敏感变量（随仓库提交）
-│   │   └── emsdevice.json # Modbus 从站配置（含光伏/负载/关口电表/储能柜点表）
 │   ├── lems-cloud3/       # cloud3 上的 LEMS 主应用（K8s；不含 emsdevice）
 │   │   ├── app.conf
 │   │   ├── .env
@@ -189,7 +183,7 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 
 ## 跨单元互访
 
-不同单元的容器属于不同的 compose 项目，默认在两个网络里，互相不可达；而把服务端口绑到宿主机回环（`127.0.0.1:xxxx`）后，别的容器也访问不到宿主机回环。同机单元需要互访时，用一张固定名字的共享网络（跨主机则走公网入口，见 model-ocr 与 lems 的现状）：
+不同单元的容器属于不同的 compose 项目，默认在两个网络里，互相不可达；而把服务端口绑到宿主机回环（`127.0.0.1:xxxx`）后，别的容器也访问不到宿主机回环。同机单元需要互访时，用一张固定名字的共享网络（跨主机则走公网入口，见 model-ocr 迁到 cloud3 后的调用方式）：
 
 1. 双方都在 `app.conf` 里声明同一张网络（`deploy.sh` 会幂等创建，不依赖单元的部署顺序）：
 
@@ -201,7 +195,7 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 
    ```yaml
    services:
-     lems:
+     app-a:
        networks:
          - default
          - shared
@@ -217,7 +211,7 @@ sudo mkdir -p /opt/cops/secrets && sudo chown -R <部署用户>:<部署用户> /
 
 共享网络不改变对外暴露方式：被调用方仍只绑回环，公网入口与鉴权由宿主机反向代理决定。
 
-> 当前仓库里没有在用 `SHARED_NETWORKS` 的单元（`lems` 与 `model-ocr` 的同机直连方案随 model-ocr 迁到 cloud3 而废弃）；这段保留作同机互访的参考做法。
+> 当前仓库里没有在用 `SHARED_NETWORKS` 的单元（原有同机直连方案随 model-ocr 迁到 cloud3 而废弃）；这段保留作同机互访的参考做法。
 
 ## 新增一个环境组件
 
@@ -318,7 +312,6 @@ apps/<name>/
 
 ```bash
 # 校验编排文件可渲染
-docker compose --project-directory apps/lems -f apps/lems/compose.yaml config
 docker compose --project-directory environment/ptdoc-qdrant \
   -f environment/ptdoc-qdrant/compose.yaml config
 
@@ -330,7 +323,7 @@ scripts/hosts.sh check
 
 # 镜像源守卫（与 CI 的 validate 同一份逻辑）
 scripts/check-registries.sh apps/model-ocr cloud3
-scripts/check-registries.sh apps/lems default
+scripts/check-registries.sh apps/ptdoc default
 
 # k8s 单元的渲染校验（未定义变量、残留 ${...}、缺 apiVersion/kind 都会失败）
 scripts/render-k8s.py apps/model-ocr > /dev/null
@@ -345,8 +338,8 @@ bash -n scripts/deploy.sh scripts/deploy-k8s.sh
 
 ## 说明
 
-- `deploy.sh` 使用 `--remove-orphans`：当某个服务从编排文件中移除时，会停掉并删除该项目下多余的容器。它只影响容器，不会删除数据卷，`lems-data` 等持久化数据不受影响。
-- 数据不随仓库走：`ptdoc` 的 SQLite 库挂载自 `/opt/ptdoc/data`，`ptdoc-qdrant` 的向量库挂载自 `/opt/ptdoc-qdrant/qdrant-storage`，default 上的 `lems` 使用命名卷 `lems-data`，cloud3 上的 `lems-cloud3` 使用 PVC `cops/lems-data`。GitOps 只管理编排与配置，删容器不丢数据。
+- `deploy.sh` 使用 `--remove-orphans`：当某个服务从编排文件中移除时，会停掉并删除该项目下多余的容器。它只影响容器，不会删除数据卷。
+- 数据不随仓库走：`ptdoc` 的 SQLite 库挂载自 `/opt/ptdoc/data`，`ptdoc-qdrant` 的向量库挂载自 `/opt/ptdoc-qdrant/qdrant-storage`，cloud3 上的 `lems-cloud3` 使用 PVC `cops/lems-data`。GitOps 只管理编排与配置，删容器不丢数据。
 - 全量部署不保证执行顺序：`apps/` 与 `environment/` 的单元在一次运行里平级展开（`max-parallel: 1`，按解析顺序）。依赖关系靠健康检查与重试兜住；主机重建后建议先手动触发环境组件。
 
 ## 文档

@@ -229,7 +229,7 @@ spec:
 # 真正的异地副本只有 NAS 那一份（另一台物理机、另一块盘），见 upload 容器末段。
 #
 # 异地凭据：私钥与 known_hosts 由宿主机 /opt/cops/backup/pg-offsite-ssh 只读挂入，
-# 不进 git、不进 Secret（与 lems-backup 的 lems-ssh 同一做法）。
+# 不进 git、不进 Secret（主机本地文件）。
 apiVersion: batch/v1
 kind: CronJob
 metadata:

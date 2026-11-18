@@ -42,7 +42,7 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 
 ¹ `DEPLOY_PORT` 与 `DEPLOY_PASSWORD` 的 `updated_at` 完全相同，说明是同一次批量写入。
 
-### 2.2 lems / lems-cloud3 运行期密钥
+### 2.2 lems-cloud3 运行期密钥
 
 `apps/lems-cloud3/app.conf`：
 `REQUIRED_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY QINIU_BUCKET QINIU_DOMAIN PRICE_SYNC_BASE_URL HOME_MARKET_GATEWAY_BASE"`
@@ -67,7 +67,7 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 | `LEMS_OCR_BASE_URL` | `OCR_BASE_URL` | OCR 服务地址 |
 | `GDPM_BASE_URL` | `GDPM_BASE_URL` | gdpm 官方披露接口地址（仅 gdpm 单元） |
 
-`QINIU_BUCKET` / `QINIU_ZONE` 不是 URL，仍写在 `apps/lems-cloud3/.env` 与 `apps/lems/.env`。
+`QINIU_BUCKET` / `QINIU_ZONE` 不是 URL，仍写在 `apps/lems-cloud3/.env`。
 
 ### 2.3 其他单元的密钥
 
