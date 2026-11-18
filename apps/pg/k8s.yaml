@@ -7,8 +7,10 @@
 # 相对旧 pg-test 实例改的四件事（都是「不在 GitOps 里」的后果）：
 #   1. PGDATA 在 PVC 上：挂载点必须是 /var/lib/postgresql/data（PGDATA 默认值）。
 #      旧实例挂的是父目录 /var/lib/postgresql，PGDATA 实际落进了容器匿名卷，Pod 一删就没。
-#   2. 没有公网入口：不建 IngressRoute / IngressRouteTCP，只有 ClusterIP。
-#      旧实例用 Traefik 的 pg 入口暴露到 186.244.201.55:30630，闸门只有口令。
+#   2. 对外入口只有 Traefik 的 pg 入口（TCP 5432，文末 IngressRouteTCP），
+#      闸门是口令 + pg_hba 里的 scram；没有 HTTP 入口。
+#      旧实例 pg-test 曾走同一个 Traefik 入口的 :30630，2026-11-13 随本单元上线移除，
+#      2026-11-18 按新需求恢复（入口端口改成 5432，与实例端口一致）。
 #   3. pg_hba 收紧到集群 Pod 网段 + scram，没有 trust，没有 host all all all。
 #   4. 备份独立成 CronJob（文末），dump 进 MinIO + 宿主机目录 + NAS（异地），不落 local-path。
 #      前两处与本单元的 PVC 同在 /dev/vda1，只有 NAS 那份能扛盘坏，见备份段的失效域注释。
@@ -65,7 +67,7 @@ metadata:
   labels:
     app: pg
 spec:
-  # ClusterIP，没有 NodePort / LoadBalancer：集群内唯一入口 pg.pg.svc:5432
+  # ClusterIP：集群内入口 pg.pg.svc:5432；集群外用 Traefik 的 pg 入口转进来（见文末）
   type: ClusterIP
   selector:
     app: pg
@@ -452,3 +454,23 @@ spec:
               hostPath:
                 path: /opt/cops/backup/pg-offsite-ssh
                 type: Directory
+---
+# 集群外入口：Traefik 的 pg 入口（entrypoint pg = 5432，定义在
+# kube-system/HelmChartConfig traefik，宿主机以 hostPort 5432 暴露，
+# 见 docs/cloud3.md 的「Traefik」一节）。
+# TCP 没有 SNI，用 HostSNI(`*`) 全收：这个入口只服务本单元，不存在多路复用问题。
+# 安全闸门只有「口令 + pg_hba 的 scram」——入口监听全部网卡，公网 IP 也能连到，
+# 所以口令必须是强口令；不要把这条入口当内网隔离用。
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: pg
+  namespace: ${K8S_NAMESPACE}
+spec:
+  entryPoints:
+    - pg
+  routes:
+    - match: HostSNI(`*`)
+      services:
+        - name: pg
+          port: ${PG_PORT}
