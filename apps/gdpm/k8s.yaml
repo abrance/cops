@@ -14,6 +14,10 @@ metadata:
 spec:
   schedule: "${GDPM_SCHEDULE}"
   timeZone: "${GDPM_TIMEZONE}"
+  # 2026-11-19 停调：lems v1.0.84 已把关系库切到 PostgreSQL，而本工具只写 SQLite，
+  # 继续跑会把官方披露数据写进一块已经没人读的库（页面看不到）。
+  # 等 gdpm 支持 PG 写入并发新 tag 后，把 .env 的 GDPM_SUSPEND 改回 false 恢复。
+  suspend: ${GDPM_SUSPEND}
   # 上一轮没跑完就不叠新一轮：整表重拉要几十秒，叠加只会互相抢 sqlite 写锁
   concurrencyPolicy: Forbid
   # 机器重启/调度失败时，错过的这一轮也要补跑（窗口 1 小时内有效）
