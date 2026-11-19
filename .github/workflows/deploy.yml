@@ -301,6 +301,10 @@ jobs:
           # 只在 SECRET_ENV 声明（不进 REQUIRED_ENV）：要关这个特性时从 SECRET_ENV
           # 删掉即可，pod 滚动重建后不再带该变量，不会变成「缺变量部署失败」。
           EMS_API_STATIC_TOKEN: ${{ secrets.EMS_API_STATIC_TOKEN }}
+          # lems（k8s）：v1.0.84 起关系库切 PostgreSQL，连接串带口令所以走 secret；
+          # 不在 REQUIRED_ENV（留着 SQLite 的兼容路径），只进 SECRET_ENV。
+          # 目标库/角色在 pg 单元（pg.pg.svc:5432/ems），由 sqlite2pg 迁入存量数据。
+          EMS_DB_LINK: ${{ secrets.EMS_DB_LINK }}
           # model-jev（k8s）：公网入口的 Bearer token。源 secret 名是 MODEL_TOKEN，
           # 因 SECRET_ENV 里声明的变量名是容器侧要看到的 AUTH_TOKEN，所以这里做一次映射
           # （secret 名与容器侧变量名不同时的一次映射）。
