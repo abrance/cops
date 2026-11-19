@@ -46,14 +46,16 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 
 `apps/lems-cloud3/app.conf`：
 `REQUIRED_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY QINIU_BUCKET QINIU_DOMAIN PRICE_SYNC_BASE_URL HOME_MARKET_GATEWAY_BASE"`
-`SECRET_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY EMS_API_STATIC_TOKEN EMS_DB_LINK"`
+`SECRET_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY EMS_API_STATIC_TOKEN EMS_DB_LINK EMS_ADMIN_PASSWORD EMS_USER_PASSWORD"`
 
 | 变量名 | L1 GitHub | L2 `/opt/cops/secrets/lems-cloud3.env` | L3 `cops/lems-cloud3-secrets` | 长度 | 上次写入 (UTC) | 影响面 | 轮换后验证 |
 |---|---|---|---|---|---|---|---|
 | `QINIU_ACCESS_KEY` | ✔ | ✔ (600) | ✔ | 40 | 2026-09-22T01:53:43Z | 日报图片归档到七牛；**换掉会导致历史图片链接仍可用但新归档失败，需同时改七牛控制台** | 部署后容器内变量长度一致；触发一次 OCR 归档 |
 | `QINIU_SECRET_KEY` | ✔ | ✔ (600) | ✔ | 40 | 2026-09-22T01:54:23Z | 同上 | 同上 |
-| `EMS_API_STATIC_TOKEN` | ✔ | ✔ (600) | ✔ | 11（**偏短，待轮换为 32**） | 2026-11-08T04:16:47Z | ems 静态 token 鉴权，命中即 admin 全权限（读写均放行） | 见第 5 节四条实测 |
+| `EMS_API_STATIC_TOKEN` | ✔ | ✔ (600) | ✔ | 32 | 2026-11-13T03:20:30Z | ems 静态 token 鉴权，命中即 admin 全权限（读写均放行） | 见第 5 节四条实测 |
 | `EMS_DB_LINK` | ✔ | ✔ (600) | ✔ | 98 | 2026-11-18T23:59:20Z | ems（lems）关系库连接串，v1.0.84 起指向 `pg.pg.svc:5432/ems`；口令段与 `EMS_DB_PASSWORD` 同值 | 部署后 pod 内变量存在；`/api/health` 的 database=healthy；设备树/电价能读出迁移数据（见第 8 节） |
+| `EMS_ADMIN_PASSWORD` | ✔ | ✔ (600) | ✔ | 24 | 2026-11-19T05:31:40Z | 仅**空库建库**时写入 `setting.admin_password`；已有库不覆盖（改密走登录后接口）。不设=出厂默认 `admin` | 部署后 pod 内变量存在且与 secret 同值（sha256 比对）；现有库登录口令不受影响 |
+| `EMS_USER_PASSWORD` | ✔ | ✔ (600) | ✔ | 24 | 2026-11-19T05:31:42Z | 同上，对应 `setting.user_password`；不设=出厂默认 `111111` | 同上 |
 
 注：地址类变量在 `REQUIRED_ENV` 但**不在** `SECRET_ENV` —— 它们不属于密钥。URL/域名统一维护在 GitHub Repository variables，部署时由 `scripts/apply-repo-vars.sh` 注入单元 `.env`：
 
@@ -123,16 +125,14 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 
 ## 5. `EMS_API_STATIC_TOKEN` 现状与轮换计划
 
-- 当前长度 11，命中即 admin 全权限（读写都放行）。
-- 已确认可从 `POST /api/spot-report/extract` 等写接口通过鉴权 → 风险偏高。
-- 计划：轮换为 32 位随机值，走第 4 节流程，并按下列四条验收：
-  1. 旧 token → `code:401`
-  2. 新 token 打 `/api/spot-report` → `code:0`
-  3. 新 token 打写接口（`POST /api/spot-report/extract` 不带参数）→ 返回参数校验错误，**不是** 401
-  4. `/api/health` 全绿
-  5. 附加：`emsdevice` Pod 的 `creationTimestamp` 与重启计数不变
-
-状态：**待执行**（见 PR 描述中的当前进度）。
+- 当前长度 **32**（GitHub secret 于 2026-11-13T03:20:30Z 更新；宿主机 `/opt/cops/secrets/lems-cloud3.env`
+  与 pod 内变量 sha256 一致）。早期文档里的「11 位偏短」已不适用。
+- 命中即 admin 全权限（读写都放行），仍属高敏：只经 SECRET_ENV 下发，不进仓库。
+- 2026-11-19 实测（去引号后使用）：`/api/spot-market/latest` → `code:0`、`/api/price` → 200；
+  不带 token → `{"code":401,…}`；`/api/health` 200。
+- 下次轮换走第 4 节流程，验收四条：旧 token 401；新 token 读接口 `code:0`；写接口返回参数校验错误
+  而非 401；`/api/health` 全绿。
+- 注意：本机 `~/.github.env` 里该值**带双引号**，脚本取用要先 `tr -d '"'`，否则 Bearer 鉴权必然 401。
 
 ## 6. 本机镜像文件 `/home/xiaoy/.github.env` 的约定
 

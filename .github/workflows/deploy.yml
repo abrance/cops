@@ -305,6 +305,11 @@ jobs:
           # 不在 REQUIRED_ENV（留着 SQLite 的兼容路径），只进 SECRET_ENV。
           # 目标库/角色在 pg 单元（pg.pg.svc:5432/ems），由 sqlite2pg 迁入存量数据。
           EMS_DB_LINK: ${{ secrets.EMS_DB_LINK }}
+          # lems（k8s）：v1.0.89 起建库时可用这两个变量作初始口令，**只在空库上生效**
+          # （已有库里 admin_password/user_password 不会被覆盖，改密走登录后的接口）。
+          # 不设时退回出厂默认 admin/111111，所以只在 SECRET_ENV 声明、不进 REQUIRED_ENV。
+          EMS_ADMIN_PASSWORD: ${{ secrets.EMS_ADMIN_PASSWORD }}
+          EMS_USER_PASSWORD: ${{ secrets.EMS_USER_PASSWORD }}
           # gdpm（k8s）：同一个 PG 连接串，容器侧变量名是 GDPM_DB_LINK（一次名称映射）。
           # 与 lems 共用 secret，避免两处口令漂移。
           GDPM_DB_LINK: ${{ secrets.EMS_DB_LINK }}
