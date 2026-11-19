@@ -305,6 +305,9 @@ jobs:
           # 不在 REQUIRED_ENV（留着 SQLite 的兼容路径），只进 SECRET_ENV。
           # 目标库/角色在 pg 单元（pg.pg.svc:5432/ems），由 sqlite2pg 迁入存量数据。
           EMS_DB_LINK: ${{ secrets.EMS_DB_LINK }}
+          # gdpm（k8s）：同一个 PG 连接串，容器侧变量名是 GDPM_DB_LINK（一次名称映射）。
+          # 与 lems 共用 secret，避免两处口令漂移。
+          GDPM_DB_LINK: ${{ secrets.EMS_DB_LINK }}
           # model-jev（k8s）：公网入口的 Bearer token。源 secret 名是 MODEL_TOKEN，
           # 因 SECRET_ENV 里声明的变量名是容器侧要看到的 AUTH_TOKEN，所以这里做一次映射
           # （secret 名与容器侧变量名不同时的一次映射）。

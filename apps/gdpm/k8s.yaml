@@ -14,9 +14,8 @@ metadata:
 spec:
   schedule: "${GDPM_SCHEDULE}"
   timeZone: "${GDPM_TIMEZONE}"
-  # 2026-11-19 停调：lems v1.0.84 已把关系库切到 PostgreSQL，而本工具只写 SQLite，
-  # 继续跑会把官方披露数据写进一块已经没人读的库（页面看不到）。
-  # 等 gdpm 支持 PG 写入并发新 tag 后，把 .env 的 GDPM_SUSPEND 改回 false 恢复。
+  # 2026-11-19：lems 关系库切 PostgreSQL 后本工具曾暂停一天（只写 SQLite 会进黑洞）；
+  # ems-gdpm v1.0.85 起支持 PG（GDPM_DB_LINK），这里恢复调度。
   suspend: ${GDPM_SUSPEND}
   # 上一轮没跑完就不叠新一轮：整表重拉要几十秒，叠加只会互相抢 sqlite 写锁
   concurrencyPolicy: Forbid
@@ -52,6 +51,13 @@ spec:
                   value: "${GDPM_TIMEZONE}"
                 - name: GDPM_DB
                   value: "${GDPM_DB}"
+                # 2026-11-19 起写 ems 的 PostgreSQL（与 lems 同一个库）。
+                # 连接串含口令，来 secret EMS_DB_LINK（deploy.yml 映射到 GDPM_DB_LINK）。
+                - name: GDPM_DB_LINK
+                  valueFrom:
+                    secretKeyRef:
+                      name: gdpm-secrets
+                      key: GDPM_DB_LINK
                 - name: GDPM_BASE_URL
                   value: "${GDPM_BASE_URL}"
                 - name: GDPM_WORK_DIR
