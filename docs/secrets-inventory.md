@@ -53,7 +53,7 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 | `QINIU_ACCESS_KEY` | ✔ | ✔ (600) | ✔ | 40 | 2026-09-22T01:53:43Z | 日报图片归档到七牛；**换掉会导致历史图片链接仍可用但新归档失败，需同时改七牛控制台** | 部署后容器内变量长度一致；触发一次 OCR 归档 |
 | `QINIU_SECRET_KEY` | ✔ | ✔ (600) | ✔ | 40 | 2026-09-22T01:54:23Z | 同上 | 同上 |
 | `EMS_API_STATIC_TOKEN` | ✔ | ✔ (600) | ✔ | 11（**偏短，待轮换为 32**） | 2026-11-08T04:16:47Z | ems 静态 token 鉴权，命中即 admin 全权限（读写均放行） | 见第 5 节四条实测 |
-| `EMS_DB_LINK` | ✔ | ✔ (600) | ✔ | 98 | 2026-11-18T23:59:20Z | ems（lems）关系库连接串，v1.0.84 起指向 `pg.pg.svc:5432/ems`；口令段与 `EMS_DB_PASSWORD` 同值 | 部署后 pod 内变量存在；`/api/health` 的 database=healthy；设备树/电价能读出迁移数据（见第 6 节） |
+| `EMS_DB_LINK` | ✔ | ✔ (600) | ✔ | 98 | 2026-11-18T23:59:20Z | ems（lems）关系库连接串，v1.0.84 起指向 `pg.pg.svc:5432/ems`；口令段与 `EMS_DB_PASSWORD` 同值 | 部署后 pod 内变量存在；`/api/health` 的 database=healthy；设备树/电价能读出迁移数据（见第 8 节） |
 
 注：地址类变量在 `REQUIRED_ENV` 但**不在** `SECRET_ENV` —— 它们不属于密钥。URL/域名统一维护在 GitHub Repository variables，部署时由 `scripts/apply-repo-vars.sh` 注入单元 `.env`：
 
@@ -67,6 +67,8 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 | `LEMS_QINIU_DOMAIN` | `QINIU_DOMAIN` | 七牛对象存储访问域名 |
 | `LEMS_OCR_BASE_URL` | `OCR_BASE_URL` | OCR 服务地址 |
 | `GDPM_BASE_URL` | `GDPM_BASE_URL` | gdpm 官方披露接口地址（仅 gdpm 单元） |
+
+`apps/gdpm` 的运行期密钥（2026-11-19 起）：`REQUIRED_ENV="GDPM_DB_LINK"` / `SECRET_ENV="GDPM_DB_LINK"`，值为 GitHub secret `EMS_DB_LINK`（deploy.yml 做一次名称映射：容器侧叫 `GDPM_DB_LINK`）。与 lems 共用同一个 PG 连接串，避免两处口令漂移。
 
 `QINIU_BUCKET` / `QINIU_ZONE` 不是 URL，仍写在 `apps/lems-cloud3/.env`。
 
@@ -157,10 +159,28 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 
 维护约定：新增部署单元时，同步更新第 2 节的表格与 `app.conf` 的 `SECRET_ENV`；新增主机时更新 2.1 节与 `hosts.yaml`。
 
-## 6. EMS 关系库切 PostgreSQL（2026-11-19，v1.0.84）
+## 8. EMS 关系库切 PostgreSQL（2026-11-19，v1.0.84）
 
 链路：`apps/pg`（StatefulSet `pg-0`，namespace `pg`）建库 `ems` + 角色 `ems` → GitHub secret `EMS_DB_LINK`（`postgresql://ems:***@pg.pg.svc.cluster.local:5432/ems`）→ `/opt/cops/secrets/lems-cloud3.env` → Secret `cops/lems-cloud3-secrets` → 容器 `EMS_DB_LINK`。
 
 - 存量迁移：`ems` 仓库 `OpenLEMS/services/s_db/cmd/sqlite2pg`（`-dry-run` 先看行数，再 `-truncate` 写入；工具会 `setval` 重置自增序列）。本次 19 张表 32598 行，2026-11-19T00:00Z 完成。
 - 回退：把 `EMS_DB_LINK` 从 `SECRET_ENV` / GitHub secret 移除后重部，`config.yaml` 的 sqlite 默认连接仍有效，PVC 上 `db.sqlite3`（19MB，停机时刻 2026-11-18T23:57Z）保留未动。
 - 验证：`/api/health` 的 `database=healthy`；`device` 4 / `setting` 27 / `gd_spot_metric` 6867 与 sqlite 源一致；`log` 表随运行增长（证明写入落在 PG）。
+
+## 9. gdpm 写 PostgreSQL（2026-11-19，ems-gdpm v1.0.86+）
+
+ems v1.0.84 把 lems 关系库切到 PG 后，gdpm（每天 08:20 的官方披露采集 CronJob）仍只写
+`/app/out/db.sqlite3`，数据会写进一块没人读的库。处理过程：
+
+1. 先 `GDPM_SUSPEND=true` 停调（提交 `06262ca`），避免继续产生孤儿数据；
+2. ems 仓库 `tools/gdpm` 增加 `gdpm_db.py`：`GDPM_DB_LINK` 是 PG URI 时走 psycopg，否则 sqlite；
+   SQL 沿用 `?` 占位，PG 分支翻成 `%s`，DDL 只把自增主键换成 `BIGSERIAL`；
+3. 发 tag `v1.0.85`（首版，PG 写入报 `AttributeError: Connection has no attribute executemany`）、
+   `v1.0.86`（psycopg 走 cursor，可用）、`v1.0.87`（摘要改按列名取值）；
+4. cops `apps/gdpm`：`GDPM_IMAGE_TAG=v1.0.87`、`GDPM_SUSPEND=false`、`k8s.yaml` 从 Secret
+   `gdpm-secrets` 注入 `GDPM_DB_LINK`（deploy.yml 映射自 `secrets.EMS_DB_LINK`）；
+5. 手工触发一次 `kubectl create job --from=cronjob/gdpm`：Completed，写入 6190 条
+   `origin=pm-api` 指标 + 1515 条采集元数据，`/api/spot-market/latest` 返回 2026-11-19。
+
+注意：`gdpm` 的写入是整表重拉 + `ON CONFLICT DO UPDATE`，重复触发不会产生重复行
+（复核 SQL：按 `report_date,run_date,dataset,scope,metric` 分组 `having count(*)>1` 为 0）。
