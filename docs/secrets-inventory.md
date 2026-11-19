@@ -46,13 +46,14 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 
 `apps/lems-cloud3/app.conf`：
 `REQUIRED_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY QINIU_BUCKET QINIU_DOMAIN PRICE_SYNC_BASE_URL HOME_MARKET_GATEWAY_BASE"`
-`SECRET_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY EMS_API_STATIC_TOKEN"`
+`SECRET_ENV="QINIU_ACCESS_KEY QINIU_SECRET_KEY EMS_API_STATIC_TOKEN EMS_DB_LINK"`
 
 | 变量名 | L1 GitHub | L2 `/opt/cops/secrets/lems-cloud3.env` | L3 `cops/lems-cloud3-secrets` | 长度 | 上次写入 (UTC) | 影响面 | 轮换后验证 |
 |---|---|---|---|---|---|---|---|
 | `QINIU_ACCESS_KEY` | ✔ | ✔ (600) | ✔ | 40 | 2026-09-22T01:53:43Z | 日报图片归档到七牛；**换掉会导致历史图片链接仍可用但新归档失败，需同时改七牛控制台** | 部署后容器内变量长度一致；触发一次 OCR 归档 |
 | `QINIU_SECRET_KEY` | ✔ | ✔ (600) | ✔ | 40 | 2026-09-22T01:54:23Z | 同上 | 同上 |
 | `EMS_API_STATIC_TOKEN` | ✔ | ✔ (600) | ✔ | 11（**偏短，待轮换为 32**） | 2026-11-08T04:16:47Z | ems 静态 token 鉴权，命中即 admin 全权限（读写均放行） | 见第 5 节四条实测 |
+| `EMS_DB_LINK` | ✔ | ✔ (600) | ✔ | 98 | 2026-11-18T23:59:20Z | ems（lems）关系库连接串，v1.0.84 起指向 `pg.pg.svc:5432/ems`；口令段与 `EMS_DB_PASSWORD` 同值 | 部署后 pod 内变量存在；`/api/health` 的 database=healthy；设备树/电价能读出迁移数据（见第 6 节） |
 
 注：地址类变量在 `REQUIRED_ENV` 但**不在** `SECRET_ENV` —— 它们不属于密钥。URL/域名统一维护在 GitHub Repository variables，部署时由 `scripts/apply-repo-vars.sh` 注入单元 `.env`：
 
@@ -77,6 +78,7 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 | `COMMON_SIMPLE_PASSWORD` | ✔ | `pg.env`/`minio.env`/`mysql8.env` (600) | `pg/pg-secrets`、`minio/minio-secrets`、`mysql8/mysql8-secrets` | 11 | 2026-10-14T10:29:53Z | mysql8、minio、pg（经 `MINIO_ROOT_PASSWORD` 映射） | **一个值覆盖三个组件**（有意复用避免漂移）。验证：三者 Pod 均能连自身 DB/MinIO |
 | `POSTGRES_PASSWORD` | ✔ | `pg.env` (600) | `pg/pg-secrets` | 48 | 2026-11-12T20:15:53Z | `apps/pg`（REQUIRED_ENV+SECRET_ENV） | Postgres 超级用户；换掉须同步改库内口令 |
 | `LLMBM_DB_PASSWORD` | ✔ | `pg.env` (600) | `pg/pg-secrets` | 48 | 2026-11-12T20:15:55Z | `apps/pg`、`apps/llmbm` | llmbm 应用角色口令；注意 `cops/llmbm-pg` 里的 `LLMBM_PG_URL` 含该口令的连接串，轮换须一并重建 |
+| `EMS_DB_PASSWORD` | ✔ | `pg.env` (600) | `pg/pg-secrets` | 48 | 2026-11-19T00:08:48Z | `apps/pg`（初始化脚本 `11-ems.sh`，仅空 datadir 时用） | ems 应用角色 `ems` 的口令；与 `EMS_DB_LINK` 连接串内的口令同值，**轮换必须两处一起改**（`gh secret set` 两个都改，再重跑 pg/lems 部署） |
 | `PTDOC_DATA_KEY` | ✔ | `ptdoc.env`（旧云主机，600） | —（compose 单元） | 11 | 2026-09-16T03:19:19Z | `apps/ptdoc`（REQUIRED_ENV+SECRET_ENV） | ptdoc 数据加密 key；换掉会导致既有数据无法解密，**非必要不轮换** |
 | `MODEL_TOKEN` | ✔ | `model-jev.env` (600) | `cops/model-jev-secrets`（key `AUTH_TOKEN`） | 11 | 2026-09-30T15:45:01Z | `apps/model-jev` | 公网 Bearer token，**名称映射**：secret 名 `MODEL_TOKEN` → 容器侧 `AUTH_TOKEN`。换掉须同步改调用方 pi-jev 的 `TYPESAFE_API_KEY` |
 | `AGENT_PROVIDER_API_KEY` | ✔ | `model-agent.env`、`omp-web.env` (600) | `cops/model-agent-secrets`、`cops/omp-web-secrets` | 17 | 2026-10-01T10:33:20Z | `model-ocr`/`omp-web` | 上游模型供应商 key；换掉影响 OCR 与 omp-web 的模型调用 |
@@ -93,8 +95,8 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 
 | 文件 | 权限 | 变量 | 长度 |
 |---|---|---|---|
-| `lems-cloud3.env` | 600 | QINIU_ACCESS_KEY / QINIU_SECRET_KEY / EMS_API_STATIC_TOKEN | 40 / 40 / 11 |
-| `pg.env` | 600 | POSTGRES_PASSWORD / LLMBM_DB_PASSWORD / MINIO_ROOT_USER / MINIO_ROOT_PASSWORD | 48 / 48 / 5 / 11 |
+| `lems-cloud3.env` | 600 | QINIU_ACCESS_KEY / QINIU_SECRET_KEY / EMS_API_STATIC_TOKEN / EMS_DB_LINK | 40 / 40 / 32 / 98 |
+| `pg.env` | 600 | POSTGRES_PASSWORD / LLMBM_DB_PASSWORD / EMS_DB_PASSWORD / MINIO_ROOT_USER / MINIO_ROOT_PASSWORD | 48 / 48 / 48 / 5 / 11 |
 | `vectorman.env` | 600 | GSE_AGENT_TOKEN | 27 |
 | `model-agent.env` | 600 | AGENT_PROVIDER_API_KEY / PI_WEB_PASSWORD | 17 / 11 |
 | `model-jev.env` | 600 | AUTH_TOKEN | 11 |
@@ -154,3 +156,11 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 ---
 
 维护约定：新增部署单元时，同步更新第 2 节的表格与 `app.conf` 的 `SECRET_ENV`；新增主机时更新 2.1 节与 `hosts.yaml`。
+
+## 6. EMS 关系库切 PostgreSQL（2026-11-19，v1.0.84）
+
+链路：`apps/pg`（StatefulSet `pg-0`，namespace `pg`）建库 `ems` + 角色 `ems` → GitHub secret `EMS_DB_LINK`（`postgresql://ems:***@pg.pg.svc.cluster.local:5432/ems`）→ `/opt/cops/secrets/lems-cloud3.env` → Secret `cops/lems-cloud3-secrets` → 容器 `EMS_DB_LINK`。
+
+- 存量迁移：`ems` 仓库 `OpenLEMS/services/s_db/cmd/sqlite2pg`（`-dry-run` 先看行数，再 `-truncate` 写入；工具会 `setval` 重置自增序列）。本次 19 张表 32598 行，2026-11-19T00:00Z 完成。
+- 回退：把 `EMS_DB_LINK` 从 `SECRET_ENV` / GitHub secret 移除后重部，`config.yaml` 的 sqlite 默认连接仍有效，PVC 上 `db.sqlite3`（19MB，停机时刻 2026-11-18T23:57Z）保留未动。
+- 验证：`/api/health` 的 `database=healthy`；`device` 4 / `setting` 27 / `gd_spot_metric` 6867 与 sqlite 源一致；`log` 表随运行增长（证明写入落在 PG）。

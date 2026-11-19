@@ -328,6 +328,9 @@ jobs:
           # 已经以 base64 形式进过会话记录，换实例时一并作废。
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           LLMBM_DB_PASSWORD: ${{ secrets.LLMBM_DB_PASSWORD }}
+          # pg（k8s）：EMS（lems-cloud3）应用角色口令。与 secrets.EMS_DB_LINK 里的口令同值；
+          # 只在空 datadir 上由 11-ems.sh 创建角色/库时用到，现有实例不重跑。
+          EMS_DB_PASSWORD: ${{ secrets.EMS_DB_PASSWORD }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"

@@ -40,6 +40,16 @@ data:
     CREATE DATABASE $LLMBM_DB_NAME OWNER $LLMBM_DB_USER;
     SQL
     echo "已创建角色与库：$LLMBM_DB_USER / $LLMBM_DB_NAME"
+  11-ems.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    # EMS（lems-cloud3）自 v1.0.84 起关系库切到本实例；只在空 datadir 上跑，
+    # 已有实例的角色/库是 2026-11-19 手工建的（同名同口令），重建后也能自动补齐。
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<SQL
+    CREATE ROLE $EMS_DB_USER LOGIN PASSWORD '$EMS_DB_PASSWORD';
+    CREATE DATABASE $EMS_DB_NAME OWNER $EMS_DB_USER;
+    SQL
+    echo "已创建角色与库：$EMS_DB_USER / $EMS_DB_NAME"
   99-pg-hba.sh: |
     #!/bin/bash
     set -euo pipefail
@@ -151,6 +161,16 @@ spec:
                 secretKeyRef:
                   name: pg-secrets
                   key: LLMBM_DB_PASSWORD
+            # EMS（lems-cloud3）应用库：初始化脚本 11-ems.sh 用
+            - name: EMS_DB_USER
+              value: ${EMS_DB_USER}
+            - name: EMS_DB_NAME
+              value: ${EMS_DB_NAME}
+            - name: EMS_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-secrets
+                  key: EMS_DB_PASSWORD
           ports:
             - name: pg
               containerPort: ${PG_PORT}
