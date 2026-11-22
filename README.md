@@ -40,7 +40,7 @@
 | `llmbm` | `llmbm` | `ghcr.io/abrance/llmbm:v0.2.0` | LLM 能力基准测试台（题库跑测 + 能力分）；cloud3（k8s），入口 `https://llmbm.xiaoyxq.top`（A 记录指向 cloud3 公网 IP，证书由 Traefik 自动签；旧 `llmbm.186.244.201.55.sslip.io` 已弃用）；**有状态**，结果库在 `pg` 单元的 `llmbm` 库（SQLite 卷 `cops/llmbm-data` 仅作回滚后端）；**单镜像**（api 进程内托管前端产物，容器端口 8787）；模型 Key 只在浏览器 localStorage，服务端不持有，故无运行期密钥；源码仓库 [abrance/llmbm](https://github.com/abrance/llmbm) |
 | `openbao` | `openbao` | `quay.io/openbao/openbao` | 密钥/密码管理（Vault 的 OpenBao 发行版）；cloud3（k8s），入口 `https://bao.xiaoyxq.top`（UI 在 `/ui/`）；**有状态**，数据在 PVC `data-openbao-openbao-0`（10Gi）；**第一个 helm chart 单元**——期望状态 = `values.yaml` 渲染官方 chart + 本目录 `k8s.yaml`，见下文「helm chart 单元」 |
 
-单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`gdpm`/`model-ocr`/`model-logcluster`/`model-forecast`/`model-jev`/`model-price-gbm`/`llmbm`/`openbao`/`pg`/`minio`/`mysql8` 在 `cloud3`，其余在 `default`。
+单元部署到哪台主机由 `app.conf` 的 `DEPLOY_TARGET` 声明（不写 = `default`），可选值见 [`hosts.yaml`](hosts.yaml)。当前 `lems-cloud3`/`gdpm`/`model-ocr`/`model-logcluster`/`model-forecast`/`model-jev`/`model-price-gbm`/`model-price-lear`/`llmbm`/`openbao`/`pg`/`minio`/`mysql8` 在 `cloud3`，其余在 `default`。
 
 ## 已纳管环境组件
 
