@@ -29,6 +29,9 @@ data:
   SPOT_REPORT_WECHAT_HOST: "${SPOT_REPORT_WECHAT_HOST}"
   FORECAST_BASE_URL: "${FORECAST_BASE_URL}"
   OCR_BASE_URL: "${OCR_BASE_URL}"
+  # model-price-gbm（集群内 ClusterIP）：GBM 对比算法的预测服务地址，
+  # 形如 http://model-price-gbm.cops.svc.cluster.local:8080（不带 /v1/price-forecast）。
+  PRICE_GBM_BASE_URL: "${PRICE_GBM_BASE_URL}"
   OCR_TIMEOUT_SECONDS: "${OCR_TIMEOUT_SECONDS}"
 ---
 apiVersion: apps/v1
