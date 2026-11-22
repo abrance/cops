@@ -83,6 +83,8 @@ jobs:
           LEMS_OCR_BASE_URL: ${{ vars.LEMS_OCR_BASE_URL }}
           # model-price-gbm 的集群内地址（ems 侧变量名 PRICE_GBM_BASE_URL）
           LEMS_PRICE_GBM_BASE_URL: ${{ vars.LEMS_PRICE_GBM_BASE_URL }}
+          # model-price-lear 的集群内地址（ems 侧变量名 PRICE_LEAR_BASE_URL）
+          LEMS_PRICE_LEAR_BASE_URL: ${{ vars.LEMS_PRICE_LEAR_BASE_URL }}
           GDPM_BASE_URL: ${{ vars.GDPM_BASE_URL }}
         run: bash scripts/apply-repo-vars.sh "${{ matrix.item.scope }}/${{ matrix.item.name }}"
 
@@ -183,6 +185,8 @@ jobs:
           LEMS_OCR_BASE_URL: ${{ vars.LEMS_OCR_BASE_URL }}
           # model-price-gbm 的集群内地址（ems 侧变量名 PRICE_GBM_BASE_URL）
           LEMS_PRICE_GBM_BASE_URL: ${{ vars.LEMS_PRICE_GBM_BASE_URL }}
+          # model-price-lear 的集群内地址（ems 侧变量名 PRICE_LEAR_BASE_URL）
+          LEMS_PRICE_LEAR_BASE_URL: ${{ vars.LEMS_PRICE_LEAR_BASE_URL }}
           GDPM_BASE_URL: ${{ vars.GDPM_BASE_URL }}
         run: bash scripts/apply-repo-vars.sh "${{ matrix.item.scope }}/${{ matrix.item.name }}"
 

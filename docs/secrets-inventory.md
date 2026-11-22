@@ -69,6 +69,7 @@ cops 的密钥不是「存在一处」，而是三层各存一份，职责不同
 | `LEMS_QINIU_DOMAIN` | `QINIU_DOMAIN` | 七牛对象存储访问域名 |
 | `LEMS_OCR_BASE_URL` | `OCR_BASE_URL` | OCR 服务地址 |
 | `LEMS_PRICE_GBM_BASE_URL` | `PRICE_GBM_BASE_URL` | GBM 对比算法的预测服务（ems v1.0.91 起），集群内 `http://model-price-gbm.cops.svc.cluster.local:8080`；空值=对比不启用 |
+| `LEMS_PRICE_LEAR_BASE_URL` | `PRICE_LEAR_BASE_URL` | LEAR 对比算法的预测服务（ems v1.0.93 起），集群内 `http://model-price-lear.cops.svc.cluster.local:8080`；空值=对比不启用 |
 | `GDPM_BASE_URL` | `GDPM_BASE_URL` | gdpm 官方披露接口地址（仅 gdpm 单元） |
 
 `apps/gdpm` 的运行期密钥（2026-11-19 起）：`REQUIRED_ENV="GDPM_DB_LINK"` / `SECRET_ENV="GDPM_DB_LINK"`，值为 GitHub secret `EMS_DB_LINK`（deploy.yml 做一次名称映射：容器侧叫 `GDPM_DB_LINK`）。与 lems 共用同一个 PG 连接串，避免两处口令漂移。

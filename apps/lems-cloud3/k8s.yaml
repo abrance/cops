@@ -32,6 +32,9 @@ data:
   # model-price-gbm（集群内 ClusterIP）：GBM 对比算法的预测服务地址，
   # 形如 http://model-price-gbm.cops.svc.cluster.local:8080（不带 /v1/price-forecast）。
   PRICE_GBM_BASE_URL: "${PRICE_GBM_BASE_URL}"
+  # model-price-lear（集群内 ClusterIP）：LEAR 对比算法，形如
+  # http://model-price-lear.cops.svc.cluster.local:8080（不带 /v1/price-forecast）。
+  PRICE_LEAR_BASE_URL: "${PRICE_LEAR_BASE_URL}"
   OCR_TIMEOUT_SECONDS: "${OCR_TIMEOUT_SECONDS}"
 ---
 apiVersion: apps/v1
