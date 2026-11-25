@@ -1,0 +1,147 @@
+# sub2api 期望状态：自用 AI 中转站（订阅号池 → OpenAI 兼容端点）
+#
+# 由 cops 部署流程在 cloud2（default 主机）/opt/cops/apps/sub2api 下执行。
+# 三件套按上游官方 docker-compose.yml：sub2api + PostgreSQL 18 + Redis 8。
+# 与官方文件的差异（都是为了适配 cops 的约定）：
+#   - 端口只绑回环 127.0.0.1:8080（公网域名由宿主机 Traefik/dockpanel 反代，规则不在本仓库）
+#   - 数据用宿主机绝对路径（/opt/sub2api/*），不用命名卷：换机/备份直接打包目录
+#   - 密钥用 ${VAR:-}，缺值门禁交给 app.conf 的 REQUIRED_ENV（CI 校验不加载密钥）
+name: sub2api
+
+services:
+  sub2api:
+    image: ${SUB2API_IMAGE}:${SUB2API_IMAGE_TAG}
+    container_name: sub2api
+    restart: unless-stopped
+    pull_policy: missing
+    platform: linux/amd64
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    ports:
+      - "127.0.0.1:${SUB2API_PORT:-8080}:8080"
+    volumes:
+      - /opt/sub2api/data:/app/data
+    environment:
+      AUTO_SETUP: "true"
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: "8080"
+      SERVER_MODE: release
+      RUN_MODE: ${SUB2API_RUN_MODE:-standard}
+      TZ: ${TZ:-Asia/Shanghai}
+      # ── PostgreSQL ──
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_USER: ${POSTGRES_USER:-sub2api}
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-}
+      DATABASE_DBNAME: ${POSTGRES_DB:-sub2api}
+      DATABASE_SSLMODE: disable
+      # ── Redis ──
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+      REDIS_DB: "0"
+      # ── 管理员（首次启动自动创建）──
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      # ── 会话/2FA 密钥（固定值，否则每次重启登录态与 2FA 全失效）──
+      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_EXPIRE_HOUR: "24"
+      TOTP_ENCRYPTION_KEY: ${TOTP_ENCRYPTION_KEY:-}
+      # 在线更新/价格表需要访问 GitHub；cloud2 直连 GitHub 不稳，走本机已有的出口代理
+      UPDATE_PROXY_URL: ${UPDATE_PROXY_URL:-}
+      OPS_ENABLED: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  postgres:
+    image: ${SUB2API_DB_IMAGE}:${SUB2API_DB_IMAGE_TAG}
+    container_name: sub2api-postgres
+    restart: unless-stopped
+    pull_policy: missing
+    platform: linux/amd64
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    command: >
+      postgres
+      -c max_connections=${POSTGRES_MAX_CONNECTIONS:-100}
+      -c shared_buffers=${POSTGRES_SHARED_BUFFERS:-128MB}
+      -c effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-1GB}
+      -c maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-64MB}
+    environment:
+      # postgres:18 默认 PGDATA 在匿名卷里；不显式指定会导致数据不落盘到挂载目录
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_USER: ${POSTGRES_USER:-sub2api}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: ${POSTGRES_DB:-sub2api}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - /opt/sub2api/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sub2api} -d ${POSTGRES_DB:-sub2api}"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: ${SUB2API_REDIS_IMAGE}:${SUB2API_REDIS_IMAGE_TAG}
+    container_name: sub2api-redis
+    restart: unless-stopped
+    pull_policy: missing
+    platform: linux/amd64
+    ulimits:
+      nofile:
+        soft: 100000
+        hard: 100000
+    command:
+      - redis-server
+      - --save
+      - "60"
+      - "1"
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --requirepass
+      - ${REDIS_PASSWORD:-}
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      REDISCLI_AUTH: ${REDIS_PASSWORD:-}
+    volumes:
+      - /opt/sub2api/redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
