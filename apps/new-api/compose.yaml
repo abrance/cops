@@ -1,0 +1,95 @@
+# new-api 期望状态：自用 LLM 中转站（中文后台，取代 litellm）
+#
+# 由 cops 部署流程在 cloud2（default 主机）/opt/cops/apps/new-api 下执行。
+# 三件套按上游官方 docker-compose.yml：new-api + PostgreSQL（主库）+ Redis（缓存/限流）。
+#
+# 数据：/opt/new-api/data（上传与静态资源）与 /opt/new-api/pgdata（**主库**，勿删）。
+# 用户、渠道、token、日志全在 PG 里；/opt/litellm/pgdata 是已下线的 litellm 库，
+# 与本单元无关，确认不需要后可单独清理。
+name: new-api
+
+services:
+  new-api:
+    image: ${NEW_API_IMAGE}:${NEW_API_IMAGE_TAG}
+    container_name: new-api
+    restart: unless-stopped
+    # pull_policy=missing：deploy.sh 已显式 pull（带重试），always 会在 up -d 时再拉一次同 digest
+    pull_policy: missing
+    platform: linux/amd64
+    command: ["--log-dir", "/app/logs"]
+    environment:
+      # 主库连接串：口令来自 /opt/cops/secrets/new-api.env（部署时写入，0600）
+      SQL_DSN: ${SQL_DSN:-}
+      REDIS_CONN_STRING: redis://:${REDIS_PASSWORD:-}@redis:6379
+      TZ: ${TZ:-Asia/Shanghai}
+      # 单容器部署；多实例时才需要相同的 SESSION_SECRET 做会话共享
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      # 默认语言 zh-CN 只影响日志/邮件/通知的措辞，后台界面本身就有中文切换
+      DEFAULT_LANGUAGE: zh-CN
+      ERROR_LOG_ENABLED: "true"
+      BATCH_UPDATE_ENABLED: "true"
+      NODE_NAME: cloud2
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - /opt/new-api/data:/data
+      - /opt/new-api/logs:/app/logs
+    ports:
+      # 只监听回环：公网域名由宿主机 Traefik（dockpanel）反代，反代规则不在本仓库
+      - "127.0.0.1:${NEW_API_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:3000/api/status | grep -q '\"success\":true'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  postgres:
+    image: ${NEW_API_DB_IMAGE}:${NEW_API_DB_IMAGE_TAG}
+    container_name: new-api-postgres
+    restart: unless-stopped
+    pull_policy: missing
+    platform: linux/amd64
+    environment:
+      POSTGRES_USER: root
+      # 用 ${VAR:-} 而不是 ${VAR:?}：CI 的「校验」步骤只跑 docker compose config --quiet、
+      # 不加载运行期密钥，:? 会让每个 PR 红。真正的门禁是 app.conf 的 REQUIRED_ENV。
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      POSTGRES_DB: new-api
+    volumes:
+      - /opt/new-api/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U root -d new-api"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  redis:
+    image: ${NEW_API_REDIS_IMAGE}:${NEW_API_REDIS_IMAGE_TAG}
+    container_name: new-api-redis
+    restart: unless-stopped
+    pull_policy: missing
+    platform: linux/amd64
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-}", "--appendonly", "yes"]
+    volumes:
+      # 只放缓存与计数器，可丢；留卷是为了重启不用重新预热
+      - /opt/new-api/redisdata:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

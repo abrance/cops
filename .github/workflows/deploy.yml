@@ -353,6 +353,13 @@ jobs:
           LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
           LITELLM_SALT_KEY: ${{ secrets.LITELLM_SALT_KEY }}
           LITELLM_DB_PASSWORD: ${{ secrets.LITELLM_DB_PASSWORD }}
+          # new-api（compose，cloud2）：取代 litellm 的中文中转站。
+          # SQL_DSN 里的口令必须与 POSTGRES_PASSWORD 同值（同一个库的两个引用点），
+          # 轮换时两个 secret 一起改；四个都在 REQUIRE_ENV 里，缺了部署直接失败。
+          SQL_DSN: ${{ secrets.NEW_API_SQL_DSN }}
+          POSTGRES_PASSWORD: ${{ secrets.NEW_API_DB_PASSWORD }}
+          REDIS_PASSWORD: ${{ secrets.NEW_API_REDIS_PASSWORD }}
+          SESSION_SECRET: ${{ secrets.NEW_API_SESSION_SECRET }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
