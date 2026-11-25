@@ -17,7 +17,10 @@ services:
     platform: linux/amd64
     environment:
       POSTGRES_USER: litellm
-      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:?LITELLM_DB_PASSWORD 必须来自 /opt/cops/secrets/litellm.env}
+      # 用 ${VAR:-} 而不是 ${VAR:?}：CI 的「校验」步骤只跑 docker compose config --quiet、
+      # 不加载运行期密钥，:? 会让每个 PR 红。真正的门禁是 app.conf 的 REQUIRED_ENV
+      # （deploy.sh 拉镜像前就检查，缺密钥直接失败，不会起一个空口令的库）。
+      POSTGRES_PASSWORD: ${LITELLM_DB_PASSWORD:-}
       POSTGRES_DB: litellm
     volumes:
       - /opt/litellm/pgdata:/var/lib/postgresql/data
@@ -43,10 +46,10 @@ services:
       db:
         condition: service_healthy
     environment:
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY 必须来自 /opt/cops/secrets/litellm.env}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:-}
       # SALT_KEY 加密库里存的 provider key；更换后已存 key 无法解密，只能重录
-      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?LITELLM_SALT_KEY 必须来自 /opt/cops/secrets/litellm.env}
-      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD}@db:5432/litellm
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:-}
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:-}@db:5432/litellm
       # 模型在 Admin UI 里加（DB 存），config.yaml 只放骨架
       STORE_MODEL_IN_DB: "True"
       LITELLM_LOG: ${LITELLM_LOG:-INFO}
