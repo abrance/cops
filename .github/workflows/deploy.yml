@@ -347,6 +347,12 @@ jobs:
           # pg（k8s）：EMS（lems-cloud3）应用角色口令。与 secrets.EMS_DB_LINK 里的口令同值；
           # 只在空 datadir 上由 11-ems.sh 创建角色/库时用到，现有实例不重跑。
           EMS_DB_PASSWORD: ${{ secrets.EMS_DB_PASSWORD }}
+          # litellm（compose，cloud2）：自用中转站的三个密钥，都在 REQUIRED_ENV 里——
+          # 缺 master key 会静默上线一个无鉴权网关，缺 salt key 会让库里的
+          # provider key 无法加解密（换值等于全部重录）。
+          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+          LITELLM_SALT_KEY: ${{ secrets.LITELLM_SALT_KEY }}
+          LITELLM_DB_PASSWORD: ${{ secrets.LITELLM_DB_PASSWORD }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"

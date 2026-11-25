@@ -25,7 +25,9 @@ hosts:
   default:
     drivers: compose native
     # 旧主机：应用镜像走 ghcr.chenby.cn（该镜像站只对它放行），上游官方镜像走 docker.io
-    registries: ghcr.chenby.cn docker.io
+    # 旧主机：应用镜像走 ghcr.chenby.cn（该镜像站只对它放行），上游官方镜像走 docker.io
+    # ghcr.io：litellm 单元（上游官方源，cloud2 实测直连可拉）
+    registries: ghcr.chenby.cn ghcr.io docker.io
     notes: 现有云主机，compose / native 单元的默认目标
     secrets:
       host: DEPLOY_HOST
