@@ -355,18 +355,19 @@ jobs:
           # 变量名不能叫 POSTGRES_PASSWORD：本 env 块里 pg（k8s）已占用同名，重复键 YAML 不合法。
           SQL_DSN: ${{ secrets.NEW_API_SQL_DSN }}
           NEW_API_DB_PASSWORD: ${{ secrets.NEW_API_DB_PASSWORD }}
+          # new-api 与 sub2api 共用同一个 Redis 口令（两个独立实例，同值无害）
           REDIS_PASSWORD: ${{ secrets.NEW_API_REDIS_PASSWORD }}
           SESSION_SECRET: ${{ secrets.NEW_API_SESSION_SECRET }}
           # sub2api（compose，cloud2）：取代 new-api 的订阅号池中转站。
           # 变量名与容器侧一致（POSTGRES_PASSWORD/REDIS_PASSWORD/JWT_SECRET/
           # TOTP_ENCRYPTION_KEY/ADMIN_PASSWORD），都在 REQUIRED_ENV 里。
-          # 注意：POSTGRES_PASSWORD 在本 env 块已被 pg（k8s）占用，sub2api 用独立名
-          # SUB2API_DB_PASSWORD，靠 app.conf 的 SECRET_ENV 映射成容器侧的 POSTGRES_PASSWORD。
-          SUB2API_DB_PASSWORD: ${{ secrets.SUB2API_DB_PASSWORD }}
-          SUB2API_REDIS_PASSWORD: ${{ secrets.SUB2API_REDIS_PASSWORD }}
-          SUB2API_JWT_SECRET: ${{ secrets.SUB2API_JWT_SECRET }}
-          SUB2API_TOTP_ENCRYPTION_KEY: ${{ secrets.SUB2API_TOTP_ENCRYPTION_KEY }}
-          SUB2API_ADMIN_PASSWORD: ${{ secrets.SUB2API_ADMIN_PASSWORD }}
+          # 注意：env 块里的键名必须等于 app.conf SECRET_ENV 里的名字（脚本用 ${!key} 取值），
+          # 所以这里不能加 SUB2API_ 前缀。
+          # POSTGRES_PASSWORD 已被 pg（k8s）占用（同名同值，共用即可，不重复声明）；
+          # REDIS_PASSWORD 已被 new-api 占用（同值即可）。
+          JWT_SECRET: ${{ secrets.SUB2API_JWT_SECRET }}
+          TOTP_ENCRYPTION_KEY: ${{ secrets.SUB2API_TOTP_ENCRYPTION_KEY }}
+          ADMIN_PASSWORD: ${{ secrets.SUB2API_ADMIN_PASSWORD }}
         run: |
           set -euo pipefail
           unit="${{ matrix.item.scope }}/${{ matrix.item.name }}"
