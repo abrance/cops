@@ -347,24 +347,18 @@ jobs:
           # pg（k8s）：EMS（lems-cloud3）应用角色口令。与 secrets.EMS_DB_LINK 里的口令同值；
           # 只在空 datadir 上由 11-ems.sh 创建角色/库时用到，现有实例不重跑。
           EMS_DB_PASSWORD: ${{ secrets.EMS_DB_PASSWORD }}
-          # litellm 已下线（2026-11-25，改 new-api）：映射与单元目录一起删除，
-          # 否则全量部署会按旧期望状态把 litellm 再启起来，与 new-api 抢 4000 端口。
-          # new-api（compose，cloud2）：取代 litellm 的中文中转站。
-          # SQL_DSN 里的口令必须与 NEW_API_DB_PASSWORD 同值（同一个库的两个引用点），
-          # 轮换时两个 secret 一起改；四个都在 REQUIRE_ENV 里，缺了部署直接失败。
-          # 变量名不能叫 POSTGRES_PASSWORD：本 env 块里 pg（k8s）已占用同名，重复键 YAML 不合法。
-          SQL_DSN: ${{ secrets.NEW_API_SQL_DSN }}
-          NEW_API_DB_PASSWORD: ${{ secrets.NEW_API_DB_PASSWORD }}
-          # new-api 与 sub2api 共用同一个 Redis 口令（两个独立实例，同值无害）
+          # litellm 已下线（2026-11-25 → new-api → sub2api）：历史单元的映射与目录一起删除，
+          # 否则全量部署会按旧期望状态把它们再启起来，抢 4000/8080 端口。
+          # new-api 已下线（2026-11-26）：单元目录与上面四条 secret 映射一并删除，
+          # 镜像与数据留在 cloud2（备份 /opt/new-api-final-backup-20261126.tgz）。
+          # Redis 口令仍由下面 sub2api 单元使用，键名沿用 REDIS_PASSWORD。
           REDIS_PASSWORD: ${{ secrets.NEW_API_REDIS_PASSWORD }}
-          SESSION_SECRET: ${{ secrets.NEW_API_SESSION_SECRET }}
           # sub2api（compose，cloud2）：取代 new-api 的订阅号池中转站。
           # 变量名与容器侧一致（POSTGRES_PASSWORD/REDIS_PASSWORD/JWT_SECRET/
           # TOTP_ENCRYPTION_KEY/ADMIN_PASSWORD），都在 REQUIRED_ENV 里。
           # 注意：env 块里的键名必须等于 app.conf SECRET_ENV 里的名字（脚本用 ${!key} 取值），
           # 所以这里不能加 SUB2API_ 前缀。
-          # POSTGRES_PASSWORD 已被 pg（k8s）占用（同名同值，共用即可，不重复声明）；
-          # REDIS_PASSWORD 已被 new-api 占用（同值即可）。
+          # POSTGRES_PASSWORD 已被 pg（k8s）占用（同名同值，共用即可，不重复声明）。
           JWT_SECRET: ${{ secrets.SUB2API_JWT_SECRET }}
           TOTP_ENCRYPTION_KEY: ${{ secrets.SUB2API_TOTP_ENCRYPTION_KEY }}
           ADMIN_PASSWORD: ${{ secrets.SUB2API_ADMIN_PASSWORD }}
